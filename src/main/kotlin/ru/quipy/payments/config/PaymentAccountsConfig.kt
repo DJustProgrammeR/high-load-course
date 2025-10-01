@@ -65,9 +65,7 @@ class PaymentAccountsConfig {
         return properties.map {
             PaymentExternalSystemAdapterImpl(
                 it,
-                paymentService,
-                paymentProviderHostPort,
-                token
+                paymentService
             )
         }
     }
