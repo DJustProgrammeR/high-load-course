@@ -2,6 +2,7 @@ package ru.quipy.payments.logic
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
+import io.micrometer.core.instrument.Counter
 import io.micrometer.core.instrument.Gauge
 import io.micrometer.core.instrument.Metrics
 import kotlinx.coroutines.CoroutineScope
@@ -9,7 +10,6 @@ import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
@@ -80,25 +80,35 @@ class PaymentExternalSystemAdapterImpl(
         .tag("accountName", accountName)
         .register(Metrics.globalRegistry)
 
+    val actualTimeout = Counter.builder("payment_actual_timeout_count")
+        .description("Count total amount of actual timeouts")
+        .tag("accountName", accountName)
+        .register(Metrics.globalRegistry)
 
-    override fun canAcceptPayment(deadline: Long): Boolean {
-        val estimatedWaitMs = (queue.size / rateLimitPerSec.toDouble()) * 1000
+    val theoreticalTimeout = Counter.builder("payment_theoretical_timeout_count")
+        .description("Count total amount of theoretical timeouts")
+        .tag("accountName", accountName)
+        .register(Metrics.globalRegistry)
+
+    override fun canAcceptPayment(deadline: Long): Pair<Boolean, Long> {
+        val estimatedWaitMs = ((queue.size / rateLimitPerSec.toDouble()) + 1) * 1000
         val willCompleteAt = now() + estimatedWaitMs + requestAverageProcessingTime.toMillis()
 
         val canMeetDeadline = willCompleteAt < deadline
         val queueOk = queue.size < maxQueueSize
 
-        return canMeetDeadline && queueOk
+        return Pair(canMeetDeadline && queueOk, willCompleteAt.toLong())
     }
 
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
-        if (!canAcceptPayment(deadline)) {
+        val (canAccept, expectedCompletionMillis) = canAcceptPayment(deadline)
+        if (!canAccept) {
+            logger.error("429 from PaymentExternalSystemAdapterImpl")
+            val delaySeconds = (expectedCompletionMillis - System.currentTimeMillis()) / 1000
             throw ResponseStatusException(
                 HttpStatus.TOO_MANY_REQUESTS,
-                "All payment accounts are under back pressure. Try again later."
-            ).also {
-                it.headers.add("Retry-After", "2")
-            }
+                delaySeconds.toString(),
+            )
         }
 
         val paymentRequest = PaymentRequest(deadline) {
@@ -107,6 +117,7 @@ class PaymentExternalSystemAdapterImpl(
 
         val accepted = queue.offer(paymentRequest)
         if (!accepted) {
+            logger.error("429 from PaymentExternalSystemAdapterImpl (queue reason)")
             logger.error("[$accountName] Queue overflow! Rejecting payment $paymentId")
             paymentESService.update(paymentId) {
                 it.logProcessing(false, now(), UUID.randomUUID(), reason = "Queue overflow (back pressure).")
@@ -115,7 +126,7 @@ class PaymentExternalSystemAdapterImpl(
                 HttpStatus.TOO_MANY_REQUESTS,
                 "All payment accounts are under back pressure. Try again later."
             ).also {
-                it.headers.add("Retry-After", "2")
+                it.headers.add("Retry-After", "5")
             }
         }
     }
@@ -218,7 +229,19 @@ class PaymentExternalSystemAdapterImpl(
 
         paymentExecutor.submit {
             try {
-                paymentRequest.call.run()
+                if (now() < paymentRequest.deadline) {
+                    if (now() + requestAverageProcessingTime.toMillis() > paymentRequest.deadline) {
+                        theoreticalTimeout.increment()
+                    }
+
+                    paymentRequest.call.run()
+
+                    if (now() > paymentRequest.deadline) {
+                        actualTimeout.increment()
+                    }
+                } else {
+                    actualTimeout.increment()
+                }
             } finally {
                 inFlightRequests.decrementAndGet()
             }
