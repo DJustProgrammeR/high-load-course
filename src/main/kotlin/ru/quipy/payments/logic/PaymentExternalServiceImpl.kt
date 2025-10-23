@@ -24,8 +24,7 @@ import java.time.Duration
 import java.util.*
 import java.util.concurrent.*
 import java.util.concurrent.atomic.AtomicInteger
-import kotlin.math.pow
-import kotlin.random.Random
+import kotlin.math.min
 
 
 // Advice: always treat time as a Duration
@@ -46,8 +45,10 @@ class PaymentExternalSystemAdapterImpl(
     private val serviceName = properties.serviceName
     private val accountName = properties.accountName
     private val requestAverageProcessingTime = properties.averageProcessingTime
-    private val rateLimitPerSec = properties.rateLimitPerSec
+    private val rateLimitPerSec = properties.rateLimitPerSec.toDouble()
     private val parallelRequests = properties.parallelRequests
+    private val parallelLimitPerSec = properties.parallelRequests.toDouble()/properties.averageProcessingTime.toSeconds()
+    private val minimalLimitPerSec = min(rateLimitPerSec, parallelLimitPerSec)
 
     private val client = OkHttpClient.Builder().build()
 
@@ -62,6 +63,7 @@ class PaymentExternalSystemAdapterImpl(
         CallerBlockingRejectedExecutionHandler()
     )
 
+    private val lock = Any()
     private val maxQueueSize = 5000
     private val queue = PriorityBlockingQueue<PaymentRequest>(maxQueueSize)
 
@@ -91,48 +93,54 @@ class PaymentExternalSystemAdapterImpl(
         .register(Metrics.globalRegistry)
 
     override fun canAcceptPayment(deadline: Long): Pair<Boolean, Long> {
-        val estimatedWaitMs = ((queue.size / rateLimitPerSec.toDouble()) + 1) * 1000
-        val willCompleteAt = now() + estimatedWaitMs + requestAverageProcessingTime.toMillis()
+        val estimatedWaitMs = (queue.size / minimalLimitPerSec) * 1000
+        val additionalTimeMs = 1000
+        val willCompleteAt = now() + estimatedWaitMs + additionalTimeMs + requestAverageProcessingTime.toMillis()
 
         val canMeetDeadline = willCompleteAt < deadline
         val queueOk = queue.size < maxQueueSize
 
-        return Pair(canMeetDeadline && queueOk, willCompleteAt.toLong())
+        return Pair(canMeetDeadline && queueOk, estimatedWaitMs.toLong())
     }
 
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
-        val (canAccept, expectedCompletionMillis) = canAcceptPayment(deadline)
-        if (!canAccept) {
+        val paymentRequest = PaymentRequest(deadline) {
+            performPaymentWithRetry(paymentId, amount, paymentStartedAt, deadline)
+        }
+        var canAccept = Pair(true,0L)
+        var accepted = false
+
+        synchronized(lock) {
+            canAccept = canAcceptPayment(deadline)
+            if (canAccept.first) {
+                accepted = queue.offer(paymentRequest)
+            }
+        }
+
+        if (!canAccept.first) {
             logger.error("429 from PaymentExternalSystemAdapterImpl")
-            val delaySeconds = (expectedCompletionMillis - System.currentTimeMillis()) / 1000
+            val delaySeconds = (canAccept.second - System.currentTimeMillis()) / 1000
             throw ResponseStatusException(
                 HttpStatus.TOO_MANY_REQUESTS,
                 delaySeconds.toString(),
             )
         }
 
-        val paymentRequest = PaymentRequest(deadline) {
-            executePayment(paymentId, amount, paymentStartedAt, deadline)
-        }
-
-        val accepted = queue.offer(paymentRequest)
         if (!accepted) {
             logger.error("429 from PaymentExternalSystemAdapterImpl (queue reason)")
             logger.error("[$accountName] Queue overflow! Rejecting payment $paymentId")
             paymentESService.update(paymentId) {
                 it.logProcessing(false, now(), UUID.randomUUID(), reason = "Queue overflow (back pressure).")
             }
+            val retryTimeMs = 5L
             throw ResponseStatusException(
                 HttpStatus.TOO_MANY_REQUESTS,
-                "All payment accounts are under back pressure. Try again later."
-            ).also {
-                it.headers.add("Retry-After", "5")
-            }
+                retryTimeMs.toString()
+            )
         }
     }
 
-
-    fun executePayment(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
+    fun performPaymentWithRetry(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
         logger.warn("[$accountName] Submitting payment request for payment $paymentId")
 
         val transactionId = UUID.randomUUID()
@@ -150,9 +158,9 @@ class PaymentExternalSystemAdapterImpl(
 
         val retryManager = RetryManager(
             maxRetries = 3,
-            baseDelayMillis = 100,
             backoffFactor = 2.0,
-            jitterMillis = 50
+            jitterMillis = 0,
+            avgProcessingTime = (requestAverageProcessingTime.toMillis()*1.05).toLong()
         )
 
         var lastError: Exception? = null
@@ -205,7 +213,6 @@ class PaymentExternalSystemAdapterImpl(
         logger.error("[$accountName] Payment failed after retries for txId: $transactionId, payment: $paymentId — reason: $reason")
     }
 
-
     override fun price() = properties.price
 
     override fun isEnabled() = properties.enabled
@@ -257,34 +264,3 @@ class PaymentExternalSystemAdapterImpl(
 }
 
 public fun now() = System.currentTimeMillis()
-
-data class PaymentRequest(
-    val deadline: Long,
-    val call: Runnable,
-) : Comparable<PaymentRequest> {
-    override fun compareTo(other: PaymentRequest): Int = deadline.compareTo(other.deadline)
-}
-
-class RetryManager(
-    private val maxRetries: Int,
-    private val baseDelayMillis: Long,
-    private val backoffFactor: Double = 2.0,
-    private val jitterMillis: Long = 50L
-) {
-    private var attempt = 0
-
-    fun onFailure() {
-        attempt++
-        val delay = (baseDelayMillis * backoffFactor.pow(attempt.toDouble())).toLong()
-        val jitter = Random.nextLong(0, jitterMillis + 1)
-        val totalDelay = delay + jitter
-
-        Thread.sleep(totalDelay.coerceAtMost(2000))
-    }
-
-    fun shouldRetry(currentTime: Long, deadline: Long): Boolean {
-        if (currentTime >= deadline) return false
-        if (attempt >= maxRetries) return false
-        return true
-    }
-}

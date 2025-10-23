@@ -13,7 +13,9 @@ import java.util.*
 @Service
 class OrderPayer {
 
-    val logger: Logger = LoggerFactory.getLogger(OrderPayer::class.java)
+    companion object {
+        val logger: Logger = LoggerFactory.getLogger(OrderPayer::class.java)
+    }
 
     @Autowired
     private lateinit var paymentESService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>
@@ -21,18 +23,19 @@ class OrderPayer {
     @Autowired
     private lateinit var paymentService: PaymentService
 
+//    private var rateLimit = LeakingBucketQueueRateLimiter(1L, 91.milliseconds, 160)
+
     fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long): Long {
-        val (canAccept, expectedCompletionMillis) = paymentService.canAcceptPayment(deadline)
+        val (canAccept, estimatedWaitMs) = paymentService.canAcceptPayment(deadline)
         if (!canAccept) {
             logger.error("429 from OrderPayer")
+            val delaySeconds = (estimatedWaitMs - System.currentTimeMillis()) / 1000
             throw ResponseStatusException(
                 HttpStatus.TOO_MANY_REQUESTS,
-                "All payment accounts are under back pressure. Try again later."
-            ).also {
-                val delaySeconds = (expectedCompletionMillis - System.currentTimeMillis()) / 1000
-                it.headers.add("Retry-After", "$delaySeconds")
-            }
+                delaySeconds.toString()
+            )
         }
+
 
         val createdAt = System.currentTimeMillis()
         val createdEvent = paymentESService.create {
