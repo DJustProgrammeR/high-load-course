@@ -24,7 +24,6 @@ import java.time.Duration
 import java.util.*
 import java.util.concurrent.*
 import java.util.concurrent.atomic.AtomicInteger
-import kotlin.math.log2
 import kotlin.math.min
 
 
@@ -158,8 +157,8 @@ class PaymentExternalSystemAdapterImpl(
         }.build()
 
         val retryManager = RetryManager(
-            maxRetries = 5,
-            backoffFactor = 2.0,
+            maxRetries = 3,
+            backoffFactor = 1.0,
             jitterMillis = 0,
             avgProcessingTime = (requestAverageProcessingTime.toMillis() * 1.05).toLong()
         )
@@ -190,13 +189,13 @@ class PaymentExternalSystemAdapterImpl(
                         return
                     } else {
                         lastError = Exception(body.message)
-
                         when (response.code) {
-                            429, 500, 502, 503, 504 -> retryManager.onFailure()
-                            else -> {
+                            429 -> retryManager.onFailure()
+                            in 400..499 -> {
                                 logger.warn("[$accountName] Non-retriable HTTP error ${response.code} for txId: $transactionId")
                                 shouldContinue = false
                             }
+                            else -> retryManager.onFailure()
                         }
                     }
                 }
