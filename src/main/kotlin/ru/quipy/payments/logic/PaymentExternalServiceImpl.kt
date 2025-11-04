@@ -11,6 +11,7 @@ import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
 import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
 import org.springframework.web.server.ResponseStatusException
@@ -24,6 +25,7 @@ import java.time.Duration
 import java.util.*
 import java.util.concurrent.*
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.min
 
 
@@ -49,8 +51,11 @@ class PaymentExternalSystemAdapterImpl(
     private val parallelRequests = properties.parallelRequests
     private val parallelLimitPerSec = properties.parallelRequests.toDouble()/properties.averageProcessingTime.toSeconds()
     private val minimalLimitPerSec = min(rateLimitPerSec, parallelLimitPerSec)
+    private val responseLatencyHistoryQueueSize = 1100
 
     private val client = OkHttpClient.Builder().build()
+
+    private val responseTime = LinkedBlockingDeque<Long>(responseLatencyHistoryQueueSize)
 
     private val scheduledExecutorScope = CoroutineScope(Executors.newSingleThreadExecutor().asCoroutineDispatcher())
     private val paymentExecutor = ThreadPoolExecutor(
@@ -91,6 +96,41 @@ class PaymentExternalSystemAdapterImpl(
         .description("Count total amount of theoretical timeouts")
         .tag("accountName", accountName)
         .register(Metrics.globalRegistry)
+
+    val externalPaymentRequests = Counter.builder("external_payment_requests")
+        .description("Count total amount of external payment requests")
+        .tag("accountName", accountName)
+        .register(Metrics.globalRegistry)
+
+    val externalPaymentRequestsWithRetires = Counter.builder("external_payment_requests_with_retries")
+        .description("Count total amount of external payment requests with retires")
+        .tag("accountName", accountName)
+        .register(Metrics.globalRegistry)
+
+    private val q50 = AtomicReference<Double>(0.0)
+    private val q80 = AtomicReference<Double>(0.0)
+    private val q99 = AtomicReference<Double>(0.0)
+
+    init {
+        Gauge.builder("external_request_latency", q50) { it.get() }
+            .description("External request latency quantiles")
+            .tag("accountName", accountName)
+            .tag("quantile", "0.5")
+            .register(Metrics.globalRegistry)
+
+        Gauge.builder("external_request_latency", q80) { it.get() }
+            .description("External request latency quantiles")
+            .tag("accountName", accountName)
+            .tag("quantile", "0.8")
+            .register(Metrics.globalRegistry)
+
+        Gauge.builder("external_request_latency", q99) { it.get() }
+            .description("External request latency quantiles")
+            .tag("accountName", accountName)
+            .tag("quantile", "0.99")
+            .register(Metrics.globalRegistry)
+    }
+
 
     override fun canAcceptPayment(deadline: Long): Pair<Boolean, Long> {
         val estimatedWaitMs = (queue.size / minimalLimitPerSec) * 1000
@@ -166,9 +206,15 @@ class PaymentExternalSystemAdapterImpl(
         var lastError: Exception? = null
         var shouldContinue = true
 
+        externalPaymentRequests.increment()
         while (retryManager.shouldRetry(now(), deadline) && shouldContinue) {
+            externalPaymentRequestsWithRetires.increment()
             try {
-                client.newCall(request).execute().use { response ->
+                val clientWithTimeout = buildClientWithTimeout(deadline)
+
+                clientWithTimeout.newCall(request).execute().use { response ->
+                    updateResponseLatencyData(response)
+
                     val respBodyStr = response.body?.string() ?: ""
 
                     val body = try {
@@ -207,6 +253,10 @@ class PaymentExternalSystemAdapterImpl(
                 logger.error("[$accountName] Payment failed for txId: $transactionId, payment: $paymentId", e)
                 lastError = e
                 retryManager.onFailure()
+            } finally {
+                q50.set(quantile(0.5).toDouble())
+                q80.set(quantile(0.8).toDouble())
+                q99.set(quantile(0.99).toDouble())
             }
         }
 
@@ -223,6 +273,29 @@ class PaymentExternalSystemAdapterImpl(
 
             logger.error("[$accountName] Payment failed after retries for txId: $transactionId, payment: $paymentId — reason: $reason")
         }
+    }
+
+    private fun updateResponseLatencyData(response: Response) {
+        val latency = response.receivedResponseAtMillis - response.sentRequestAtMillis
+        if (responseTime.size >= responseLatencyHistoryQueueSize-1) responseTime.pollFirst()
+        responseTime.offerLast(latency)
+    }
+
+    private fun buildClientWithTimeout(deadline: Long): OkHttpClient {
+        val timeout = quantile(0.99).coerceAtLeast(requestAverageProcessingTime.toMillis()/2).coerceAtMost(deadline - now())
+        val clientWithTimeout = client.newBuilder()
+            .callTimeout(Duration.ofMillis(timeout))
+            .readTimeout(Duration.ofMillis(timeout))
+            .build()
+        return clientWithTimeout
+    }
+
+    private fun quantile(q: Double): Long {
+        val copy = responseTime.toList()
+        if (copy.isEmpty()) return (q * (requestAverageProcessingTime.toMillis()).toDouble()).toLong()
+        val sorted = copy.sorted()
+        val indexes = ((sorted.size - 1) * q).toInt().coerceIn(0, sorted.size - 1)
+        return sorted[indexes]
     }
 
 
