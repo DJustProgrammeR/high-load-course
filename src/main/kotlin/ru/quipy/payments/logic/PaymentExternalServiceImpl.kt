@@ -52,6 +52,10 @@ class PaymentExternalSystemAdapterImpl(
     private val parallelLimitPerSec = properties.parallelRequests.toDouble()/properties.averageProcessingTime.toSeconds()
     private val minimalLimitPerSec = min(rateLimitPerSec, parallelLimitPerSec)
     private val responseLatencyHistoryQueueSize = 1100
+    private val quantileMap: Map<String, Double> = mapOf(
+        "acc-7" to 0.99,
+        "acc-16" to 0.95
+    )
 
     private val client = OkHttpClient.Builder().build()
 
@@ -109,6 +113,7 @@ class PaymentExternalSystemAdapterImpl(
 
     private val q50 = AtomicReference<Double>(0.0)
     private val q80 = AtomicReference<Double>(0.0)
+    private val q95 = AtomicReference<Double>(0.0)
     private val q99 = AtomicReference<Double>(0.0)
 
     init {
@@ -122,6 +127,12 @@ class PaymentExternalSystemAdapterImpl(
             .description("External request latency quantiles")
             .tag("accountName", accountName)
             .tag("quantile", "0.8")
+            .register(Metrics.globalRegistry)
+
+        Gauge.builder("external_request_latency", q95) { it.get() }
+            .description("External request latency quantiles")
+            .tag("accountName", accountName)
+            .tag("quantile", "0.95")
             .register(Metrics.globalRegistry)
 
         Gauge.builder("external_request_latency", q99) { it.get() }
@@ -254,9 +265,10 @@ class PaymentExternalSystemAdapterImpl(
                 lastError = e
                 retryManager.onFailure()
             } finally {
-                q50.set(quantile(0.5).toDouble())
-                q80.set(quantile(0.8).toDouble())
-                q99.set(quantile(0.99).toDouble())
+                q50.set(calculateQuantiles()[0.5]?.toDouble())
+                q80.set(calculateQuantiles()[0.8]?.toDouble())
+                q95.set(calculateQuantiles()[0.95]?.toDouble())
+                q99.set(calculateQuantiles()[0.99]?.toDouble())
             }
         }
 
@@ -282,22 +294,37 @@ class PaymentExternalSystemAdapterImpl(
     }
 
     private fun buildClientWithTimeout(deadline: Long): OkHttpClient {
-        val timeout = quantile(0.99).coerceAtLeast(requestAverageProcessingTime.toMillis()/2).coerceAtMost(deadline - now())
-        val clientWithTimeout = client.newBuilder()
-            .callTimeout(Duration.ofMillis(timeout))
-            .readTimeout(Duration.ofMillis(timeout))
-            .build()
-        return clientWithTimeout
+        val timeout = calculateQuantiles()[quantileMap[accountName]]?.coerceIn(requestAverageProcessingTime.toMillis()/2,deadline - now())
+        if(timeout != null) {
+            val clientWithTimeout = client.newBuilder()
+                .callTimeout(Duration.ofMillis(timeout))
+                .readTimeout(Duration.ofMillis(timeout))
+                .build()
+            return clientWithTimeout
+        }
+        return OkHttpClient()
     }
 
-    private fun quantile(q: Double): Long {
+    private fun calculateQuantiles(): Map<Double, Long> {
+        val quantiles = listOf(0.5, 0.8, 0.95, 0.99)
         val copy = responseTime.toList()
-        if (copy.isEmpty()) return (q * (requestAverageProcessingTime.toMillis()).toDouble()).toLong()
-        val sorted = copy.sorted()
-        val indexes = ((sorted.size - 1) * q).toInt().coerceIn(0, sorted.size - 1)
-        return sorted[indexes]
-    }
+        val result = mutableMapOf<Double, Long>()
 
+        if (copy.isEmpty()) {
+            quantiles.forEach { q ->
+                result[q] = (q * (requestAverageProcessingTime.toMillis()).toDouble()).toLong()
+            }
+            return result
+        }
+
+        val sorted = copy.sorted()
+        quantiles.forEach { q ->
+            val index = ((sorted.size - 1) * q).toInt().coerceIn(0, sorted.size - 1)
+            result[q] = sorted[index]
+        }
+
+        return result
+    }
 
     override fun price() = properties.price
 

@@ -6,8 +6,8 @@ Content-Type: application/json
   "serviceName": "{{serviceName}}",
   "token": "{{token}}",
   "ratePerSecond": 5,
-  "testCount": 1000,
-  "processingTimeMillis": 6000
+  "testCount": 800,
+  "processingTimeMillis": 5000
 }
 
 ### Stop running test to save time and resources
