@@ -53,8 +53,8 @@ class PaymentExternalSystemAdapterImpl(
     private val minimalLimitPerSec = min(rateLimitPerSec, parallelLimitPerSec)
     private val responseLatencyHistoryQueueSize = 1100
     private val quantileMap: Map<String, Double> = mapOf(
-        "acc-7" to 0.99,
-        "acc-16" to 0.95
+        "acc-7" to 0.9,
+        "acc-16" to 0.7
     )
 
     private val client = OkHttpClient.Builder().build()
