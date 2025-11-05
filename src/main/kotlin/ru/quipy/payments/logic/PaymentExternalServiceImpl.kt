@@ -54,7 +54,7 @@ class PaymentExternalSystemAdapterImpl(
     private val responseLatencyHistoryQueueSize = 1100
     private val quantileMap: Map<String, Double> = mapOf(
         "acc-7" to 0.95,
-        "acc-16" to 0.8
+        "acc-16" to 0.3
     )
 
     private val client = OkHttpClient.Builder().build()
@@ -306,7 +306,7 @@ class PaymentExternalSystemAdapterImpl(
     }
 
     private fun calculateQuantiles(): Map<Double, Long> {
-        val quantiles = listOf(0.5, 0.8, 0.95, 0.99)
+        val quantiles = listOf(0.1,0.2,0.3,0.4,0.5, 0.8, 0.95, 0.99)
         val copy = responseTime.toList()
         val result = mutableMapOf<Double, Long>()
 
