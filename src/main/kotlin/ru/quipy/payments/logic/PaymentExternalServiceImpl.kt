@@ -208,7 +208,7 @@ class PaymentExternalSystemAdapterImpl(
         }.build()
 
         val retryManager = RetryManager(
-            maxRetries = 3,
+            maxRetries = 4,
             backoffFactor = 1.0,
             jitterMillis = 0,
             avgProcessingTime = (requestAverageProcessingTime.toMillis() * 1.05).toLong()
@@ -294,7 +294,8 @@ class PaymentExternalSystemAdapterImpl(
     }
 
     private fun buildClientWithTimeout(deadline: Long): OkHttpClient {
-        val timeout = calculateQuantiles()[quantileMap[accountName]]?.coerceIn(requestAverageProcessingTime.toMillis()/2,deadline - now())
+        //val timeout = calculateQuantiles()[quantileMap[accountName]]?.coerceIn(requestAverageProcessingTime.toMillis()/2,deadline - now())
+        val timeout = calculateQuantiles()[quantileMap[accountName]]?.coerceIn(requestAverageProcessingTime.toMillis(),requestAverageProcessingTime.toMillis())
         if(timeout != null) {
             val clientWithTimeout = client.newBuilder()
                 .callTimeout(Duration.ofMillis(timeout))
