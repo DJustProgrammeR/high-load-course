@@ -50,7 +50,7 @@ class PaymentExternalSystemAdapterImpl(
     private val requestAverageProcessingTime = properties.averageProcessingTime
     private val rateLimitPerSec = properties.rateLimitPerSec.toDouble()
     private val parallelRequests = properties.parallelRequests
-    private val parallelLimitPerSec = properties.parallelRequests.toDouble()/properties.averageProcessingTime.toSeconds()
+    private val parallelLimitPerSec = properties.parallelRequests.toDouble()/(properties.averageProcessingTime.toMillis() / 1000.0)
     private val minimalLimitPerSec = min(rateLimitPerSec, parallelLimitPerSec)
     private val responseLatencyHistoryQueueSize = 1100
     private val quantileMap: Map<String, Double> = mapOf(
@@ -63,7 +63,7 @@ class PaymentExternalSystemAdapterImpl(
     private val responseTime = LinkedBlockingDeque<Long>(responseLatencyHistoryQueueSize)
 
     private val scheduledExecutorScope = CoroutineScope(Executors.newSingleThreadExecutor().asCoroutineDispatcher())
-    private val targetRps = 100 // TODO get from config?
+    private val targetRps = minimalLimitPerSec
     private val basePoolSize = ceil(targetRps / (1000.0 / requestAverageProcessingTime.toMillis())).toInt()
     private val paymentExecutor = ThreadPoolExecutor(
         basePoolSize,
