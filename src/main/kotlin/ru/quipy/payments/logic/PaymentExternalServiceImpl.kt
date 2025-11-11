@@ -26,6 +26,7 @@ import java.util.*
 import java.util.concurrent.*
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.math.ceil
 import kotlin.math.min
 
 
@@ -49,7 +50,7 @@ class PaymentExternalSystemAdapterImpl(
     private val requestAverageProcessingTime = properties.averageProcessingTime
     private val rateLimitPerSec = properties.rateLimitPerSec.toDouble()
     private val parallelRequests = properties.parallelRequests
-    private val parallelLimitPerSec = properties.parallelRequests.toDouble()/properties.averageProcessingTime.toSeconds()
+    private val parallelLimitPerSec = properties.parallelRequests.toDouble()/(properties.averageProcessingTime.toMillis() / 1000.0)
     private val minimalLimitPerSec = min(rateLimitPerSec, parallelLimitPerSec)
     private val responseLatencyHistoryQueueSize = 1100
     private val quantileMap: Map<String, Double> = mapOf(
@@ -62,9 +63,11 @@ class PaymentExternalSystemAdapterImpl(
     private val responseTime = LinkedBlockingDeque<Long>(responseLatencyHistoryQueueSize)
 
     private val scheduledExecutorScope = CoroutineScope(Executors.newSingleThreadExecutor().asCoroutineDispatcher())
+    private val targetRps = minimalLimitPerSec
+    private val basePoolSize = ceil(targetRps / (1000.0 / requestAverageProcessingTime.toMillis())).toInt()
     private val paymentExecutor = ThreadPoolExecutor(
-        16,
-        16,
+        basePoolSize,
+        basePoolSize * 2,
         0L,
         TimeUnit.MILLISECONDS,
         LinkedBlockingQueue(8_000),
