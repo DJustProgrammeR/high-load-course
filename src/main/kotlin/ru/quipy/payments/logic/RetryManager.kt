@@ -18,9 +18,9 @@ class RetryManager(
         if (currentTime >= deadline) return false
         if (attempt == maxRetries) return false
         if (attempt == 0) {
-            this.deadline = deadline
-            this.startTime = currentTime
-            computeDelays()
+//            this.deadline = deadline
+//            this.startTime = currentTime
+//            computeDelays()
         }
         return true
     }
@@ -43,15 +43,15 @@ class RetryManager(
 
     fun onFailure() {
         attempt++
-        val delay = if (attempt < maxRetries) {
-            delays?.getOrNull(attempt - 1) ?: 0
-        } else {
-            0
-        }
-        val jitter = Random.nextLong(0, jitterMillis + 1)
-        val totalDelay = delay + jitter + startTime - System.currentTimeMillis()
-        if (totalDelay > 0) {
-            Thread.sleep(totalDelay)
-        }
+//        val delay = if (attempt < maxRetries) {
+//            delays?.getOrNull(attempt - 1) ?: 0
+//        } else {
+//            0
+//        }
+//        val jitter = Random.nextLong(0, jitterMillis + 1)
+//        val totalDelay = delay + jitter + startTime - System.currentTimeMillis()
+//        if (totalDelay > 0) {
+//            Thread.sleep(totalDelay)
+//        }
     }
 }
