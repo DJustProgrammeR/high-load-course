@@ -51,10 +51,12 @@ class PaymentExternalSystemAdapterImpl(
     private val rateLimitPerSec = properties.rateLimitPerSec.toDouble()
     private val parallelRequests = properties.parallelRequests
     private val parallelLimitPerSec = properties.parallelRequests.toDouble()/(properties.averageProcessingTime.toMillis() / 1000.0)
+    private val maxPoolSize = 250
     private val minimalLimitPerSec = min(rateLimitPerSec, parallelLimitPerSec)
     private val responseLatencyHistoryQueueSize = 1100
     private val quantileMap: Map<String, Double> = mapOf(
         "acc-7" to 0.95,
+        "acc-12" to 0.99,
         "acc-16" to 0.3
     )
 
@@ -64,10 +66,10 @@ class PaymentExternalSystemAdapterImpl(
 
     private val scheduledExecutorScope = CoroutineScope(Executors.newSingleThreadExecutor().asCoroutineDispatcher())
     private val targetRps = minimalLimitPerSec
-    private val basePoolSize = ceil(targetRps / (1000.0 / requestAverageProcessingTime.toMillis())).toInt()
+    private val corePoolSize = min(ceil(targetRps / (1000.0 / requestAverageProcessingTime.toMillis())).toInt(),maxPoolSize) //11000
     private val paymentExecutor = ThreadPoolExecutor(
-        basePoolSize,
-        basePoolSize * 2,
+        corePoolSize,
+        maxPoolSize,
         0L,
         TimeUnit.MILLISECONDS,
         LinkedBlockingQueue(8_000),
@@ -76,7 +78,7 @@ class PaymentExternalSystemAdapterImpl(
     )
 
     private val lock = Any()
-    private val maxQueueSize = 5000
+    private val maxQueueSize = 50000 // hw 9 - 44000 elems approximately
     private val queue = PriorityBlockingQueue<PaymentRequest>(maxQueueSize)
 
     private val outgoingRateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofSeconds(1L))
