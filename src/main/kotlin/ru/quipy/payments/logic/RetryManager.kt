@@ -9,42 +9,33 @@ class RetryManager(
     private val jitterMillis: Long = 50L,
     private val avgProcessingTime: Long = 1000L
 ) {
-    private var attempt = 0
-    private var delays: LongArray? = null
     private var deadline: Long = 0
     private var startTime: Long = 0
 
-    fun shouldRetry(currentTime: Long, deadline: Long): Boolean {
-        if (currentTime >= deadline) return false
+    fun shouldRetry(deadline: Long, attempt: Int): Boolean {
+        if (System.currentTimeMillis() >= deadline) return false
         if (attempt == maxRetries) return false
-        if (attempt == 0) {
-            this.deadline = deadline
-            this.startTime = currentTime
-            computeDelays()
-        }
         return true
     }
 
-    private fun computeDelays() {
+    fun computeDelays(deadline: Long, startTime: Long): LongArray {
         val availableTime = deadline - startTime - avgProcessingTime
         if (availableTime <= 0) {
-            delays = LongArray(maxRetries) { 0 }
-            attempt = maxRetries
-            return
+            return LongArray(maxRetries) { 0 }
         }
 
         val sumFactor = (backoffFactor.pow(maxRetries - 1) - 1) / (backoffFactor - 1)
         val baseDelay = availableTime / sumFactor
-        delays = LongArray(maxRetries) { i ->
+        return LongArray(maxRetries) { i ->
             if (i == maxRetries - 1) 0
             else (baseDelay * backoffFactor.pow(i.toDouble())).toLong()
         }
     }
 
-    fun onFailure() {
-        attempt++
-        val delay = if (attempt < maxRetries) {
-            delays?.getOrNull(attempt - 1) ?: 0
+    fun onFailure(attempt: Int, delays: LongArray): Int {
+        var curAttempt = attempt + 1
+        val delay = if (curAttempt < maxRetries) {
+            delays.getOrNull(curAttempt - 1) ?: 0
         } else {
             0
         }
@@ -53,5 +44,6 @@ class RetryManager(
         if (totalDelay > 0) {
             Thread.sleep(totalDelay)
         }
+        return curAttempt
     }
 }

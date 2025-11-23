@@ -8,6 +8,8 @@ import io.micrometer.core.instrument.Metrics
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.launch
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -20,6 +22,7 @@ import ru.quipy.common.utils.NamedThreadFactory
 import ru.quipy.common.utils.ratelimiter.SlidingWindowRateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
+import java.io.IOException
 import java.net.SocketTimeoutException
 import java.time.Duration
 import java.util.*
@@ -51,7 +54,7 @@ class PaymentExternalSystemAdapterImpl(
     private val rateLimitPerSec = properties.rateLimitPerSec.toDouble()
     private val parallelRequests = properties.parallelRequests
     private val parallelLimitPerSec = properties.parallelRequests.toDouble()/(properties.averageProcessingTime.toMillis() / 1000.0)
-    private val maxPoolSize = 250
+    private val maxPoolSize = 1100
     private val minimalLimitPerSec = min(rateLimitPerSec, parallelLimitPerSec)
     private val responseLatencyHistoryQueueSize = 1100
     private val quantileMap: Map<String, Double> = mapOf(
@@ -72,9 +75,26 @@ class PaymentExternalSystemAdapterImpl(
         maxPoolSize,
         0L,
         TimeUnit.MILLISECONDS,
-        LinkedBlockingQueue(8_000),
+        LinkedBlockingQueue(120_000),
         NamedThreadFactory("payment-submission-executor"),
         CallerBlockingRejectedExecutionHandler()
+    )
+    private val dbExecutor = Executors.newFixedThreadPool(256)
+    val retryManager = RetryManager(
+        maxRetries = 3,
+        backoffFactor = 1.0,
+        jitterMillis = 0,
+        avgProcessingTime = (requestAverageProcessingTime.toMillis() * 1.05).toLong()
+    )
+    private data class RequestContext(
+        val paymentId: UUID,
+        val amount: Int,
+        val paymentStartedAt: Long,
+        val deadline: Long,
+        val transactionId: UUID,
+        var attempt: Int,
+        val delays: LongArray,
+        var lastError:  Exception?
     )
 
     private val lock = Any()
@@ -161,7 +181,18 @@ class PaymentExternalSystemAdapterImpl(
 
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
         val paymentRequest = PaymentRequest(deadline) {
-            performPaymentWithRetry(paymentId, amount, paymentStartedAt, deadline)
+            val transactionId = UUID.randomUUID()
+            val ctx = RequestContext(
+                paymentId = paymentId,
+                amount = amount,
+                paymentStartedAt = paymentStartedAt,
+                deadline = deadline,
+                transactionId = transactionId,
+                attempt = 0,
+                delays = retryManager.computeDelays(deadline, paymentStartedAt),
+                lastError = null
+            )
+            performPaymentWithRetry(ctx)
         }
         var canAccept = Pair(true,0L)
         var accepted = false
@@ -196,99 +227,114 @@ class PaymentExternalSystemAdapterImpl(
         }
     }
 
-    fun performPaymentWithRetry(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
-        logger.warn("[$accountName] Submitting payment request for payment $paymentId")
+    private fun performPaymentWithRetry(ctx: RequestContext) {
+        if (ctx.attempt == 0) {externalPaymentRequests.increment()}
+        externalPaymentRequestsWithRetires.increment()
 
-        val transactionId = UUID.randomUUID()
+        logger.warn("[$accountName] Submitting payment request for payment ${ctx.paymentId}")
 
-        paymentESService.update(paymentId) {
-            it.logSubmission(success = true, transactionId, now(), Duration.ofMillis(now() - paymentStartedAt))
+        dbExecutor.submit {
+            paymentESService.update(ctx.paymentId) {
+                it.logSubmission(
+                    success = true,
+                    ctx.transactionId,
+                    now(),
+                    Duration.ofMillis(now() - ctx.paymentStartedAt)
+                )
+            }
         }
-
-        logger.info("[$accountName] Submit: $paymentId , txId: $transactionId")
+        logger.info("[$accountName] Submit: ${ctx.paymentId} , txId: ${ctx.transactionId}")
 
         val request = Request.Builder().run {
-            url("http://$paymentProviderHostPort/external/process?serviceName=$serviceName&token=$token&accountName=$accountName&transactionId=$transactionId&paymentId=$paymentId&amount=$amount")
+            url("http://$paymentProviderHostPort/external/process?serviceName=$serviceName&token=$token&accountName=$accountName&transactionId=${ctx.transactionId}&paymentId=${ctx.paymentId}&amount=${ctx.amount}")
             post(emptyBody)
         }.build()
 
-        val retryManager = RetryManager(
-            maxRetries = 10,
-            backoffFactor = 1.0,
-            jitterMillis = 0,
-            avgProcessingTime = (requestAverageProcessingTime.toMillis() * 1.05).toLong()
-        )
+        val clientWithTimeout = buildClientWithTimeout(ctx.deadline)
+        clientWithTimeout.newCall(request).enqueue(object : Callback {
+            override fun onResponse(call: Call, response: Response) {
+                updateResponseLatencyData(response)
 
-        var lastError: Exception? = null
-        var shouldContinue = true
+                val respBodyStr = response.body?.string() ?: ""
+                val respCode = response.code
+                response.close()
 
-        externalPaymentRequests.increment()
-        while (retryManager.shouldRetry(now(), deadline) && shouldContinue) {
-            externalPaymentRequestsWithRetires.increment()
-            try {
-                val clientWithTimeout = buildClientWithTimeout(deadline)
-
-                clientWithTimeout.newCall(request).execute().use { response ->
-                    updateResponseLatencyData(response)
-
-                    val respBodyStr = response.body?.string() ?: ""
-
+                dbExecutor.submit {
                     val body = try {
                         mapper.readValue(respBodyStr, ExternalSysResponse::class.java)
                     } catch (e: Exception) {
-                        logger.error("[$accountName] [ERROR] Bad response for txId: $transactionId, payment: $paymentId, code: ${response.code}, body: $respBodyStr", e)
-                        ExternalSysResponse(transactionId.toString(), paymentId.toString(), false, e.message)
+                        logger.error(
+                            "[$accountName] [ERROR] Bad response for txId: ${ctx.transactionId}, payment: ${ctx.paymentId}, code: ${respCode}, body: $respBodyStr",
+                            e
+                        )
+                        ExternalSysResponse(ctx.transactionId.toString(), ctx.paymentId.toString(), false, e.message)
                     }
 
-                    logger.warn("[$accountName] Payment processed for txId: $transactionId, payment: $paymentId, succeeded: ${body.result}, message: ${body.message}, code: ${response.code}")
+                    logger.warn("[$accountName] Payment processed for txId: ${ctx.transactionId}, payment: ${ctx.paymentId}, succeeded: ${body.result}, message: ${body.message}, code: ${respCode}")
 
-                    paymentESService.update(paymentId) {
-                        it.logProcessing(body.result, now(), transactionId, reason = body.message)
+                    paymentESService.update(ctx.paymentId) {
+                        it.logProcessing(body.result, now(), ctx.transactionId, reason = body.message)
                     }
 
                     if (body.result) {
-                        shouldContinue = false
-                        return
+                        whyShouldntRetry(ctx)
                     } else {
-                        lastError = Exception(body.message)
-                        when (response.code) {
-                            429 -> retryManager.onFailure()
+                        ctx.lastError = Exception(body.message)
+                        when (respCode) {
+                            429 -> tryRetry(ctx)
                             in 400..499 -> {
-                                logger.warn("[$accountName] Non-retriable HTTP error ${response.code} for txId: $transactionId")
-                                shouldContinue = false
+                                logger.warn("[$accountName] Non-retriable HTTP error $respCode for txId: ${ctx.transactionId}")
+                                whyShouldntRetry(ctx)
                             }
-                            else -> retryManager.onFailure()
+
+                            else -> tryRetry(ctx)
+                        }
+                    }
+
+                    q50.set(calculateQuantiles()[0.5]?.toDouble())
+                    q80.set(calculateQuantiles()[0.8]?.toDouble())
+                    q95.set(calculateQuantiles()[0.95]?.toDouble())
+                    q99.set(calculateQuantiles()[0.99]?.toDouble())
+                }
+            }
+
+            override fun onFailure(call: Call, e: IOException) {
+                dbExecutor.submit {
+                    when (e) {
+                        is SocketTimeoutException -> {
+                            logger.error("[$accountName] Timeout for txId: ${ctx.transactionId}, payment: ${ctx.paymentId}", e)
+                            ctx.lastError = e
+                            tryRetry(ctx)
+                        }
+                        else -> {
+                            logger.error("[$accountName] Payment failed for txId: ${ctx.transactionId}, payment: ${ctx.paymentId}", e)
+                            ctx.lastError = e
+                            tryRetry(ctx)
                         }
                     }
                 }
-            } catch (e: SocketTimeoutException) {
-                logger.error("[$accountName] Timeout for txId: $transactionId, payment: $paymentId", e)
-                lastError = e
-                retryManager.onFailure()
-            } catch (e: Exception) {
-                logger.error("[$accountName] Payment failed for txId: $transactionId, payment: $paymentId", e)
-                lastError = e
-                retryManager.onFailure()
-            } finally {
-                q50.set(calculateQuantiles()[0.5]?.toDouble())
-                q80.set(calculateQuantiles()[0.8]?.toDouble())
-                q95.set(calculateQuantiles()[0.95]?.toDouble())
-                q99.set(calculateQuantiles()[0.99]?.toDouble())
             }
+        })
+    }
+
+    private fun whyShouldntRetry(ctx: RequestContext) {
+        val reason = when {
+            now() >= ctx.deadline -> "Deadline exceeded."
+            ctx.lastError != null -> ctx.lastError!!.message ?: "Unknown error"
+            else -> "Payment failed after retries."
         }
 
-        if (!shouldContinue) {
-            val reason = when {
-                now() >= deadline -> "Deadline exceeded."
-                lastError != null -> lastError.message ?: "Unknown error"
-                else -> "Payment failed after retries."
-            }
+        paymentESService.update(ctx.paymentId) {
+            it.logProcessing(false, now(), ctx.transactionId, reason = reason)
+        }
 
-            paymentESService.update(paymentId) {
-                it.logProcessing(false, now(), transactionId, reason = reason)
-            }
+        logger.error("[$accountName] Payment failed after retries for txId: ${ctx.transactionId}, payment: ${ctx.paymentId} — reason: $reason")
+    }
 
-            logger.error("[$accountName] Payment failed after retries for txId: $transactionId, payment: $paymentId — reason: $reason")
+    private fun tryRetry(ctx: RequestContext) {
+        ctx.attempt = retryManager.onFailure(ctx.attempt,ctx.delays)
+        if(retryManager.shouldRetry(ctx.deadline, ctx.attempt)){
+            performPaymentWithRetry(ctx)
         }
     }
 
