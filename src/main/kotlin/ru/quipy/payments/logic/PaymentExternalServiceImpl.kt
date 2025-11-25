@@ -55,7 +55,7 @@ class PaymentExternalSystemAdapterImpl(
         val emptyBody = ByteArray(0).toRequestBody(null)
         val mapper = ObjectMapper().registerKotlinModule()
 
-        private const val THREAD_COUNT = 1100
+        private const val THREAD_COUNT = 1700
     }
 
     private val serviceName = properties.serviceName
@@ -112,8 +112,19 @@ class PaymentExternalSystemAdapterImpl(
     private val executorScope = CoroutineScope(
         newFixedThreadPoolContext(THREAD_COUNT, "io_pool")
     )
+    val retryManager = RetryManager(
+        maxRetries = 2,
+        backoffFactor = 1.0,
+        jitterMillis = 0,
+        avgProcessingTime = (requestAverageProcessingTime.toMillis()).toLong()
+    )
 
-    private val dbExecutor = Executors.newFixedThreadPool(256)
+    data class RetryRequestData(
+        var attempt: Int,
+        var delays: LongArray? = null,
+        var startTime: Long
+    )
+//    private val dbExecutor = Executors.newFixedThreadPool(256)
 
     private val lock = Any()
     private val maxQueueSize = 50000 // hw 9 - 44000 elems approximately
@@ -258,18 +269,13 @@ class PaymentExternalSystemAdapterImpl(
             }.build()
             val url = request.url.toString()
 
-            val retryManager = RetryManager(
-                maxRetries = 3,
-                backoffFactor = 1.0,
-                jitterMillis = 0,
-                avgProcessingTime = (requestAverageProcessingTime.toMillis() * 1.05).toLong()
-            )
-
             var lastError: Exception? = null
             var shouldContinue = true
 
+            var retryRequest = RetryRequestData(0, null, now())
             externalPaymentRequests.increment()
-            while (retryManager.shouldRetry(now(), deadline) && shouldContinue) {
+            while (retryManager.shouldRetry(retryRequest.startTime, deadline, retryRequest.attempt) && shouldContinue) {
+                retryRequest.delays = retryManager.computeDelays(retryRequest.startTime, deadline)
                 externalPaymentRequestsWithRetires.increment()
                 try {
                     val timeout = computeDynamicTimeout(deadline)
@@ -323,23 +329,27 @@ class PaymentExternalSystemAdapterImpl(
                     } else {
                         lastError = Exception(body.message)
                         when (response.status.value) {
-                            429 -> retryManager.onFailure()
+                            429 -> {
+                                retryRequest.attempt = retryManager.onFailure(retryRequest.attempt, retryRequest.delays, retryRequest.startTime)
+                            }
                             in 400..499 -> {
                                 logger.warn("[$accountName] Non-retriable HTTP error ${response.status.value} for txId: $transactionId")
                                 shouldContinue = false
                             }
-                            else -> retryManager.onFailure()
+                            else -> {
+                                retryRequest.attempt = retryManager.onFailure(retryRequest.attempt, retryRequest.delays, retryRequest.startTime)
+                            }
                         }
                     }
 //                }
                 } catch (e: SocketTimeoutException) {
                     logger.error("[$accountName] Timeout for txId: $transactionId, payment: $paymentId", e)
                     lastError = e
-                    retryManager.onFailure()
+                    retryRequest.attempt = retryManager.onFailure(retryRequest.attempt, retryRequest.delays, retryRequest.startTime)
                 } catch (e: Exception) {
                     logger.error("[$accountName] Payment failed for txId: $transactionId, payment: $paymentId", e)
                     lastError = e
-                    retryManager.onFailure()
+                    retryRequest.attempt = retryManager.onFailure(retryRequest.attempt, retryRequest.delays, retryRequest.startTime)
                 } finally {
                     q50.set(calculateQuantiles()[0.5]?.toDouble())
                     q80.set(calculateQuantiles()[0.8]?.toDouble())
