@@ -56,6 +56,7 @@ class PaymentExternalSystemAdapterImpl(
         val mapper = ObjectMapper().registerKotlinModule()
 
         private const val THREAD_COUNT = 1700
+        private const val DB_THREAD_COUNT = 500
     }
 
     private val serviceName = properties.serviceName
@@ -75,9 +76,9 @@ class PaymentExternalSystemAdapterImpl(
 
     val client = HttpClient(CIO) {
         engine {
-            maxConnectionsCount = 12_000
+            maxConnectionsCount = 20_000
             endpoint {
-                connectTimeout = 2_000          // default connect timeout
+                connectTimeout = 500          // default connect timeout
                 connectAttempts = 5
             }
         }
@@ -110,10 +111,16 @@ class PaymentExternalSystemAdapterImpl(
 
     @OptIn(DelicateCoroutinesApi::class)
     private val executorScope = CoroutineScope(
-        newFixedThreadPoolContext(THREAD_COUNT, "io_pool")
+        newFixedThreadPoolContext(THREAD_COUNT, "requests")
     )
+
+    @OptIn(DelicateCoroutinesApi::class)
+    private val dbScope = CoroutineScope(
+        newFixedThreadPoolContext(DB_THREAD_COUNT, "submit_n_process")
+    )
+
     val retryManager = RetryManager(
-        maxRetries = 2,
+        maxRetries = 4,
         backoffFactor = 1.0,
         jitterMillis = 0,
         avgProcessingTime = (requestAverageProcessingTime.toMillis()).toLong()
@@ -143,6 +150,18 @@ class PaymentExternalSystemAdapterImpl(
     .description("In flight requests")
     .tag("accountName", accountName)
     .register(Metrics.globalRegistry)
+
+    val executorInFlight = AtomicInteger(0)
+    val dbInFlight = AtomicInteger(0)
+    val inFlightExecutorMetric = Gauge.builder("in_flight_exec_requests", executorInFlight) { it.get().toDouble() }
+        .description("In flight exec requests")
+        .tag("accountName", accountName)
+        .register(Metrics.globalRegistry)
+
+    val inFlightDbMetric = Gauge.builder("in_flight_db_requests", dbInFlight) { it.get().toDouble() }
+        .description("In flight db requests")
+        .tag("accountName", accountName)
+        .register(Metrics.globalRegistry)
 
     private val backPressureGauge = Gauge.builder("payment_backpressure_ratio") {
         (queue.size.toDouble() / maxQueueSize.toDouble()).coerceIn(0.0, 1.0)
@@ -255,11 +274,13 @@ class PaymentExternalSystemAdapterImpl(
 
             val transactionId = UUID.randomUUID()
 
-//            dbScope.launch {
+            dbScope.launch {
+                dbInFlight.incrementAndGet()
                 paymentESService.update(paymentId) {
                     it.logSubmission(success = true, transactionId, now(), Duration.ofMillis(now() - paymentStartedAt))
                 }
-//            }
+                dbInFlight.decrementAndGet()
+            }
 
             logger.info("[$accountName] Submit: $paymentId , txId: $transactionId")
 
@@ -317,11 +338,13 @@ class PaymentExternalSystemAdapterImpl(
 
                     logger.warn("[$accountName] Payment processed for txId: $transactionId, payment: $paymentId, succeeded: ${body.result}, message: ${body.message}, code: ${response.status.value}")
 
-//                    dbScope.launch {
+                    dbScope.launch {
+                        dbInFlight.incrementAndGet()
                         paymentESService.update(paymentId) {
                             it.logProcessing(body.result, now(), transactionId, reason = body.message)
                         }
-//                    }
+                        dbInFlight.decrementAndGet()
+                    }
 
                     if (body.result) {
                         shouldContinue = false
@@ -365,11 +388,13 @@ class PaymentExternalSystemAdapterImpl(
                     else -> "Payment failed after retries."
                 }
 
-//                dbScope.launch {
+                dbScope.launch {
+                    dbInFlight.incrementAndGet()
                     paymentESService.update(paymentId) {
                         it.logProcessing(false, now(), transactionId, reason = reason)
                     }
-//                }
+                    dbInFlight.decrementAndGet()
+                }
 
                 logger.error("[$accountName] Payment failed after retries for txId: $transactionId, payment: $paymentId — reason: $reason")
             }
@@ -435,6 +460,7 @@ class PaymentExternalSystemAdapterImpl(
         }
 
         executorScope.launch {
+            executorInFlight.incrementAndGet()
             if (now() < paymentRequest.deadline) {
                 if (now() + requestAverageProcessingTime.toMillis() > paymentRequest.deadline) {
                     theoreticalTimeout.increment()
@@ -444,6 +470,7 @@ class PaymentExternalSystemAdapterImpl(
             } else {
                 actualTimeout.increment()
             }
+            executorInFlight.decrementAndGet()
         }
     }
 
