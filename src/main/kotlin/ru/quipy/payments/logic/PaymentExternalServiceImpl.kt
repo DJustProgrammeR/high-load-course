@@ -120,7 +120,7 @@ class PaymentExternalSystemAdapterImpl(
     )
 
     val retryManager = RetryManager(
-        maxRetries = 4,
+        maxRetries = 3,
         backoffFactor = 1.0,
         jitterMillis = 0,
         avgProcessingTime = (requestAverageProcessingTime.toMillis()).toLong()
