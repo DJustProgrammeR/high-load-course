@@ -56,7 +56,7 @@ class PaymentExternalSystemAdapterImpl(
         val mapper = ObjectMapper().registerKotlinModule()
 
         private const val THREAD_COUNT = 200
-        private const val DB_THREAD_COUNT = 100
+        private const val DB_THREAD_COUNT = 200
     }
 
     private val serviceName = properties.serviceName
