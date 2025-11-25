@@ -55,7 +55,7 @@ class PaymentExternalSystemAdapterImpl(
         val emptyBody = ByteArray(0).toRequestBody(null)
         val mapper = ObjectMapper().registerKotlinModule()
 
-        private const val THREAD_COUNT = 1700
+        private const val THREAD_COUNT = 1000
         private const val DB_THREAD_COUNT = 500
     }
 
@@ -120,7 +120,7 @@ class PaymentExternalSystemAdapterImpl(
     )
 
     val retryManager = RetryManager(
-        maxRetries = 3,
+        maxRetries = 1,
         backoffFactor = 1.0,
         jitterMillis = 0,
         avgProcessingTime = (requestAverageProcessingTime.toMillis()).toLong()
