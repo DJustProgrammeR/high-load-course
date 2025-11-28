@@ -55,8 +55,8 @@ class PaymentExternalSystemAdapterImpl(
         val emptyBody = ByteArray(0).toRequestBody(null)
         val mapper = ObjectMapper().registerKotlinModule()
 
-        private const val THREAD_COUNT = 200
-        private const val DB_THREAD_COUNT = 200
+        private const val THREAD_COUNT = 300
+        private const val DB_THREAD_COUNT = 400
     }
 
     private val serviceName = properties.serviceName
@@ -65,7 +65,7 @@ class PaymentExternalSystemAdapterImpl(
     private val rateLimitPerSec = properties.rateLimitPerSec.toDouble()
     private val parallelRequests = properties.parallelRequests
     private val parallelLimitPerSec = properties.parallelRequests.toDouble()/(properties.averageProcessingTime.toMillis() / 1000.0)
-//    private val maxPoolSize = 1100
+
     private val minimalLimitPerSec = min(rateLimitPerSec, parallelLimitPerSec)
     private val responseLatencyHistoryQueueSize = 1100
     private val quantileMap: Map<String, Double> = mapOf(
@@ -97,17 +97,6 @@ class PaymentExternalSystemAdapterImpl(
     private val responseTime = LinkedBlockingDeque<Long>(responseLatencyHistoryQueueSize)
 
     private val scheduledExecutorScope = CoroutineScope(Executors.newSingleThreadExecutor().asCoroutineDispatcher())
-//    private val targetRps = minimalLimitPerSec
-//    private val corePoolSize = min(ceil(targetRps / (1000.0 / requestAverageProcessingTime.toMillis())).toInt(),maxPoolSize) //11000
-//    private val dbExecutor = ThreadPoolExecutor(
-//        256,
-//        1024,
-//        0L,
-//        TimeUnit.MILLISECONDS,
-//        LinkedBlockingQueue(120_000),
-//        NamedThreadFactory("payment-submission-executor"),
-//        CallerBlockingRejectedExecutionHandler()
-//    )
 
     @OptIn(DelicateCoroutinesApi::class)
     private val executorScope = CoroutineScope(
@@ -131,7 +120,7 @@ class PaymentExternalSystemAdapterImpl(
         var delays: LongArray? = null,
         var startTime: Long
     )
-//    private val dbExecutor = Executors.newFixedThreadPool(256)
+
 
     private val lock = Any()
     private val maxQueueSize = 50000 // hw 9 - 44000 elems approximately
@@ -322,19 +311,6 @@ class PaymentExternalSystemAdapterImpl(
                         )
                     }
 
-//                val clientWithTimeout = buildClientWithTimeout(deadline)
-//
-//                clientWithTimeout.newCall(request).execute().use { response ->
-//                    updateResponseLatencyData(response)
-//
-//                    val respBodyStr = response.body?.string() ?: ""
-//
-//                    val body = try {
-//                        mapper.readValue(respBodyStr, ExternalSysResponse::class.java)
-//                    } catch (e: Exception) {
-//                        logger.error("[$accountName] [ERROR] Bad response for txId: $transactionId, payment: $paymentId, code: ${response.code}, body: $respBodyStr", e)
-//                        ExternalSysResponse(transactionId.toString(), paymentId.toString(), false, e.message)
-//                    }
 
                     logger.warn("[$accountName] Payment processed for txId: $transactionId, payment: $paymentId, succeeded: ${body.result}, message: ${body.message}, code: ${response.status.value}")
 
@@ -364,7 +340,6 @@ class PaymentExternalSystemAdapterImpl(
                             }
                         }
                     }
-//                }
                 } catch (e: SocketTimeoutException) {
                     logger.error("[$accountName] Timeout for txId: $transactionId, payment: $paymentId", e)
                     lastError = e
@@ -414,7 +389,7 @@ class PaymentExternalSystemAdapterImpl(
 
     private fun computeDynamicTimeout(deadline: Long): Long? {
         val timeout = calculateQuantiles()[quantileMap[accountName]]?.coerceIn((requestAverageProcessingTime.toMillis()*1.5).toLong(),deadline - now())
-        return requestAverageProcessingTime.toMillis()
+        return timeout
     }
 
     private fun calculateQuantiles(): Map<Double, Long> {
