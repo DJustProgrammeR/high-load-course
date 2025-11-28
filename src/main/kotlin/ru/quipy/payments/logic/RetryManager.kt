@@ -13,7 +13,7 @@ class RetryManager(
 ) {
 
     fun shouldRetry(currentTime: Long, deadline: Long, attempt: Int): Boolean {
-        if (currentTime >= deadline - avgProcessingTime*0.95) return false
+        if (currentTime >= deadline - avgProcessingTime*1.02) return false
         if (attempt == maxRetries) return false
         return true
     }
@@ -34,16 +34,16 @@ class RetryManager(
 
     suspend fun onFailure(localAttempt: Int, delays: LongArray?, startTime: Long): Int {
         val attempt = localAttempt + 1
-        val delay = if (attempt < maxRetries) {
-            delays?.getOrNull(attempt - 1) ?: 0
-        } else {
-            0
-        }
-        val jitter = Random.nextLong(0, jitterMillis + 1)
-        val totalDelay = delay + jitter + startTime - System.currentTimeMillis()
-        if (totalDelay > 0) {
-            delay(totalDelay)
-        }
+//        val delay = if (attempt < maxRetries) {
+//            delays?.getOrNull(attempt - 1) ?: 0
+//        } else {
+//            0
+//        }
+//        val jitter = Random.nextLong(0, jitterMillis + 1)
+//        val totalDelay = delay + jitter + startTime - System.currentTimeMillis()
+//        if (totalDelay > 0) {
+//            delay(totalDelay)
+//        }
         return attempt
     }
 }

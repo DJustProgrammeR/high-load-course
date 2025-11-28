@@ -20,6 +20,7 @@ import org.springframework.web.server.ResponseStatusException
 import io.ktor.client.*
 import io.ktor.client.call.body
 import io.ktor.client.engine.cio.*
+import io.ktor.client.plugins.HttpRequestTimeoutException
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.timeout
 import io.ktor.client.request.post
@@ -55,19 +56,20 @@ class PaymentExternalSystemAdapterImpl(
         val emptyBody = ByteArray(0).toRequestBody(null)
         val mapper = ObjectMapper().registerKotlinModule()
 
-        private const val THREAD_COUNT = 300
+        private const val THREAD_COUNT = 70
         private const val DB_THREAD_COUNT = 400
     }
 
     private val serviceName = properties.serviceName
     private val accountName = properties.accountName
     private val requestAverageProcessingTime = properties.averageProcessingTime
+    private val actualRequestAverageProcessingTime = (properties.averageProcessingTime.toMillis().toDouble()*1.0).toLong()
     private val rateLimitPerSec = properties.rateLimitPerSec.toDouble()
     private val parallelRequests = properties.parallelRequests
     private val parallelLimitPerSec = properties.parallelRequests.toDouble()/(properties.averageProcessingTime.toMillis() / 1000.0)
 
     private val minimalLimitPerSec = min(rateLimitPerSec, parallelLimitPerSec)
-    private val responseLatencyHistoryQueueSize = 1100
+//    private val responseLatencyHistoryQueueSize = 1100
     private val quantileMap: Map<String, Double> = mapOf(
         "acc-7" to 0.95,
         "acc-12" to 0.99,
@@ -79,7 +81,7 @@ class PaymentExternalSystemAdapterImpl(
             maxConnectionsCount = 20_000
             endpoint {
                 connectTimeout = 500          // default connect timeout
-                connectAttempts = 5
+                connectAttempts = 2
             }
         }
 
@@ -94,7 +96,7 @@ class PaymentExternalSystemAdapterImpl(
         }
     }
 
-    private val responseTime = LinkedBlockingDeque<Long>(responseLatencyHistoryQueueSize)
+//    private val responseTime = LinkedBlockingDeque<Long>(responseLatencyHistoryQueueSize)
 
     private val scheduledExecutorScope = CoroutineScope(Executors.newSingleThreadExecutor().asCoroutineDispatcher())
 
@@ -112,7 +114,7 @@ class PaymentExternalSystemAdapterImpl(
         maxRetries = 1,
         backoffFactor = 1.0,
         jitterMillis = 0,
-        avgProcessingTime = (requestAverageProcessingTime.toMillis()).toLong()
+        avgProcessingTime = (actualRequestAverageProcessingTime)
     )
 
     data class RetryRequestData(
@@ -122,8 +124,8 @@ class PaymentExternalSystemAdapterImpl(
     )
 
 
-    private val lock = Any()
-    private val maxQueueSize = 50000 // hw 9 - 44000 elems approximately
+//    private val lock = Any()
+    private val maxQueueSize = 300 // hw 9 - 44000 elems approximately
     private val queue = PriorityBlockingQueue<PaymentRequest>(maxQueueSize)
 
     private val outgoingRateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofSeconds(1L))
@@ -227,12 +229,12 @@ class PaymentExternalSystemAdapterImpl(
         var canAccept = Pair(true,0L)
         var accepted = false
 
-        synchronized(lock) {
+//        synchronized(lock) {
             canAccept = canAcceptPayment(deadline)
             if (canAccept.first) {
                 accepted = queue.offer(paymentRequest)
             }
-        }
+//        }
 
         if (!canAccept.first) {
             logger.error("429 from PaymentExternalSystemAdapterImpl")
@@ -294,11 +296,12 @@ class PaymentExternalSystemAdapterImpl(
                         timeout {
                             requestTimeoutMillis = timeout
                             socketTimeoutMillis = timeout
+                            connectTimeoutMillis = timeout
                         }
                     }
 
-                    val latency = response.responseTime.timestamp - response.requestTime.timestamp
-                    updateResponseLatencyData(latency)
+//                    val latency = response.responseTime.timestamp - response.requestTime.timestamp
+//                    updateResponseLatencyData(latency)
 
                     val body = runCatching {
                         response.body<ExternalSysResponse>()
@@ -344,15 +347,19 @@ class PaymentExternalSystemAdapterImpl(
                     logger.error("[$accountName] Timeout for txId: $transactionId, payment: $paymentId", e)
                     lastError = e
                     retryRequest.attempt = retryManager.onFailure(retryRequest.attempt, retryRequest.delays, retryRequest.startTime)
-                } catch (e: Exception) {
+                }  catch (e: HttpRequestTimeoutException) {
+                    logger.error("[$accountName] Timeout for txId: $transactionId, payment: $paymentId", e)
+                    lastError = e
+                    retryRequest.attempt = retryManager.onFailure(retryRequest.attempt, retryRequest.delays, retryRequest.startTime)
+                }catch (e: Exception) {
                     logger.error("[$accountName] Payment failed for txId: $transactionId, payment: $paymentId", e)
                     lastError = e
                     retryRequest.attempt = retryManager.onFailure(retryRequest.attempt, retryRequest.delays, retryRequest.startTime)
                 } finally {
-                    q50.set(calculateQuantiles()[0.5]?.toDouble())
-                    q80.set(calculateQuantiles()[0.8]?.toDouble())
-                    q95.set(calculateQuantiles()[0.95]?.toDouble())
-                    q99.set(calculateQuantiles()[0.99]?.toDouble())
+//                    q50.set(calculateQuantiles()[0.5]?.toDouble())
+//                    q80.set(calculateQuantiles()[0.8]?.toDouble())
+//                    q95.set(calculateQuantiles()[0.95]?.toDouble())
+//                    q99.set(calculateQuantiles()[0.99]?.toDouble())
                 }
             }
 
@@ -382,36 +389,36 @@ class PaymentExternalSystemAdapterImpl(
         }
     }
 
-    private fun updateResponseLatencyData(latency: Long) {
-        if (responseTime.size >= responseLatencyHistoryQueueSize-1) responseTime.pollFirst()
-        responseTime.offerLast(latency)
-    }
+//    private fun updateResponseLatencyData(latency: Long) {
+//        if (responseTime.size >= responseLatencyHistoryQueueSize-1) responseTime.pollFirst()
+//        responseTime.offerLast(latency)
+//    }
 
     private fun computeDynamicTimeout(deadline: Long): Long? {
-        val timeout = calculateQuantiles()[quantileMap[accountName]]?.coerceIn((requestAverageProcessingTime.toMillis()*1.5).toLong(),deadline - now())
-        return timeout
+        //val timeout = calculateQuantiles()[quantileMap[accountName]]?.coerceIn((requestAverageProcessingTime.toMillis()*1.5).toLong(),deadline - now())
+        return actualRequestAverageProcessingTime.coerceAtMost(deadline - now())
     }
 
-    private fun calculateQuantiles(): Map<Double, Long> {
-        val quantiles = listOf(0.1,0.2,0.3,0.4,0.5, 0.8, 0.95, 0.99)
-        val copy = responseTime.toList()
-        val result = mutableMapOf<Double, Long>()
-
-        if (copy.isEmpty()) {
-            quantiles.forEach { q ->
-                result[q] = (q * (requestAverageProcessingTime.toMillis()).toDouble()).toLong()
-            }
-            return result
-        }
-
-        val sorted = copy.sorted()
-        quantiles.forEach { q ->
-            val index = ((sorted.size - 1) * q).toInt().coerceIn(0, sorted.size - 1)
-            result[q] = sorted[index]
-        }
-
-        return result
-    }
+//    private fun calculateQuantiles(): Map<Double, Long> {
+//        val quantiles = listOf(0.1,0.2,0.3,0.4,0.5, 0.8, 0.95, 0.99)
+//        val copy = responseTime.toList()
+//        val result = mutableMapOf<Double, Long>()
+//
+//        if (copy.isEmpty()) {
+//            quantiles.forEach { q ->
+//                result[q] = (q * (requestAverageProcessingTime.toMillis()).toDouble()).toLong()
+//            }
+//            return result
+//        }
+//
+//        val sorted = copy.sorted()
+//        quantiles.forEach { q ->
+//            val index = ((sorted.size - 1) * q).toInt().coerceIn(0, sorted.size - 1)
+//            result[q] = sorted[index]
+//        }
+//
+//        return result
+//    }
 
     override fun price() = properties.price
 
