@@ -2,6 +2,14 @@ package ru.quipy.payments.logic
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
+import io.ktor.client.*
+import io.ktor.client.call.*
+import io.ktor.client.engine.java.*
+import io.ktor.client.plugins.*
+import io.ktor.client.plugins.contentnegotiation.*
+import io.ktor.client.request.*
+import io.ktor.client.statement.*
+import io.ktor.serialization.jackson.*
 import io.micrometer.core.instrument.Counter
 import io.micrometer.core.instrument.Gauge
 import io.micrometer.core.instrument.Metrics
@@ -9,36 +17,21 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.newFixedThreadPoolContext
-import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import okhttp3.Response
 import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
 import org.springframework.web.server.ResponseStatusException
-import io.ktor.client.*
-import io.ktor.client.call.body
-import io.ktor.client.engine.cio.*
-import io.ktor.client.plugins.HttpRequestTimeoutException
-import io.ktor.client.plugins.HttpTimeout
-import io.ktor.client.plugins.timeout
-import io.ktor.client.request.post
-import io.ktor.client.statement.HttpResponse
-import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
-import io.ktor.serialization.jackson.jackson
-import ru.quipy.common.utils.CallerBlockingRejectedExecutionHandler
-import ru.quipy.common.utils.NamedThreadFactory
 import ru.quipy.common.utils.ratelimiter.SlidingWindowRateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
 import java.net.SocketTimeoutException
 import java.time.Duration
 import java.util.*
-import java.util.concurrent.*
+import java.util.concurrent.Executors
+import java.util.concurrent.PriorityBlockingQueue
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
-import kotlin.math.ceil
 import kotlin.math.min
 
 
@@ -76,13 +69,11 @@ class PaymentExternalSystemAdapterImpl(
         "acc-16" to 0.3
     )
 
-    val client = HttpClient(CIO) {
+    val client = HttpClient(Java) {
         engine {
-            maxConnectionsCount = 20_000
-            endpoint {
-                connectTimeout = 500          // default connect timeout
-                connectAttempts = 2
-            }
+            dispatcher = Executors.newVirtualThreadPerTaskExecutor().asCoroutineDispatcher()
+            pipelining = true
+            protocolVersion = java.net.http.HttpClient.Version.HTTP_2
         }
 
         install(HttpTimeout) {
@@ -102,12 +93,12 @@ class PaymentExternalSystemAdapterImpl(
 
     @OptIn(DelicateCoroutinesApi::class)
     private val executorScope = CoroutineScope(
-        newFixedThreadPoolContext(THREAD_COUNT, "requests")
+        Executors.newVirtualThreadPerTaskExecutor().asCoroutineDispatcher()
     )
 
     @OptIn(DelicateCoroutinesApi::class)
     private val dbScope = CoroutineScope(
-        newFixedThreadPoolContext(DB_THREAD_COUNT, "submit_n_process")
+        Executors.newVirtualThreadPerTaskExecutor().asCoroutineDispatcher()
     )
 
     val retryManager = RetryManager(
@@ -125,7 +116,7 @@ class PaymentExternalSystemAdapterImpl(
 
 
 //    private val lock = Any()
-    private val maxQueueSize = 300 // hw 9 - 44000 elems approximately
+    private val maxQueueSize = 1000 // hw 9 - 44000 elems approximately
     private val queue = PriorityBlockingQueue<PaymentRequest>(maxQueueSize)
 
     private val outgoingRateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofSeconds(1L))
