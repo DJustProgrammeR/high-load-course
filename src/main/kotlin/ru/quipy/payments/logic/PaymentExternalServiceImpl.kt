@@ -56,8 +56,8 @@ class PaymentExternalSystemAdapterImpl(
         val emptyBody = ByteArray(0).toRequestBody(null)
         val mapper = ObjectMapper().registerKotlinModule()
 
-        private const val THREAD_COUNT = 70
-        private const val DB_THREAD_COUNT = 400
+        private const val THREAD_COUNT = 200
+        private const val DB_THREAD_COUNT = 200
     }
 
     private val serviceName = properties.serviceName
@@ -86,9 +86,9 @@ class PaymentExternalSystemAdapterImpl(
         }
 
         install(HttpTimeout) {
-            this.requestTimeoutMillis = properties.averageProcessingTime.toMillis()   // allow per-request override
-            this.connectTimeoutMillis = properties.averageProcessingTime.toMillis()
-            this.socketTimeoutMillis = properties.averageProcessingTime.toMillis()
+            this.requestTimeoutMillis = 2 * properties.averageProcessingTime.toMillis()   // allow per-request override
+            this.connectTimeoutMillis = 2 * properties.averageProcessingTime.toMillis()
+            this.socketTimeoutMillis = 2 * properties.averageProcessingTime.toMillis()
         }
 
         install(ContentNegotiation) {
@@ -111,7 +111,7 @@ class PaymentExternalSystemAdapterImpl(
     )
 
     val retryManager = RetryManager(
-        maxRetries = 1,
+        maxRetries = 2,
         backoffFactor = 1.0,
         jitterMillis = 0,
         avgProcessingTime = (actualRequestAverageProcessingTime)
@@ -294,9 +294,9 @@ class PaymentExternalSystemAdapterImpl(
 
                     val response: HttpResponse = client.post(url) {
                         timeout {
-                            requestTimeoutMillis = timeout
-                            socketTimeoutMillis = timeout
-                            connectTimeoutMillis = timeout
+                            requestTimeoutMillis = 2 * (timeout ?: 10000L)
+                            socketTimeoutMillis = 2 * (timeout ?: 10000L)
+                            connectTimeoutMillis = 2 * (timeout ?: 10000L)
                         }
                     }
 
