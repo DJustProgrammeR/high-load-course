@@ -32,7 +32,7 @@ class RetryManager(
         }
     }
 
-    suspend fun onFailure(localAttempt: Int, delays: LongArray?, startTime: Long): Int {
+    fun onFailure(localAttempt: Int, delays: LongArray?, startTime: Long): Int {
         val attempt = localAttempt + 1
 //        val delay = if (attempt < maxRetries) {
 //            delays?.getOrNull(attempt - 1) ?: 0

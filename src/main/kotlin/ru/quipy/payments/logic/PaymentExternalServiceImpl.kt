@@ -2,14 +2,6 @@ package ru.quipy.payments.logic
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
-import io.ktor.client.*
-import io.ktor.client.call.*
-import io.ktor.client.engine.java.*
-import io.ktor.client.plugins.*
-import io.ktor.client.plugins.contentnegotiation.*
-import io.ktor.client.request.*
-import io.ktor.client.statement.*
-import io.ktor.serialization.jackson.*
 import io.micrometer.core.instrument.Counter
 import io.micrometer.core.instrument.Gauge
 import io.micrometer.core.instrument.Metrics
@@ -17,7 +9,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.launch
-import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
@@ -25,7 +16,9 @@ import org.springframework.web.server.ResponseStatusException
 import ru.quipy.common.utils.ratelimiter.SlidingWindowRateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
-import java.net.SocketTimeoutException
+import java.net.URI
+import java.net.http.HttpClient
+import java.net.http.HttpRequest
 import java.time.Duration
 import java.util.*
 import java.util.concurrent.Executors
@@ -69,23 +62,11 @@ class PaymentExternalSystemAdapterImpl(
         "acc-16" to 0.3
     )
 
-    val client = HttpClient(Java) {
-        engine {
-            dispatcher = Executors.newVirtualThreadPerTaskExecutor().asCoroutineDispatcher()
-            pipelining = true
-            protocolVersion = java.net.http.HttpClient.Version.HTTP_2
-        }
-
-        install(HttpTimeout) {
-            this.requestTimeoutMillis = 2 * properties.averageProcessingTime.toMillis()   // allow per-request override
-            this.connectTimeoutMillis = 2 * properties.averageProcessingTime.toMillis()
-            this.socketTimeoutMillis = 2 * properties.averageProcessingTime.toMillis()
-        }
-
-        install(ContentNegotiation) {
-            jackson()
-        }
-    }
+    private val client = HttpClient
+        .newBuilder()
+        .executor(Executors.newFixedThreadPool(100))
+        .version(HttpClient.Version.HTTP_2)
+        .build()
 
 //    private val responseTime = LinkedBlockingDeque<Long>(responseLatencyHistoryQueueSize)
 
@@ -250,134 +231,124 @@ class PaymentExternalSystemAdapterImpl(
         }
     }
 
-    private suspend fun performPaymentWithRetry(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
-        try {
-            logger.warn("[$accountName] Submitting payment request for payment $paymentId")
+    private fun performPaymentWithRetry(paymentId: UUID,
+                                        amount: Int, paymentStartedAt: Long,
+                                        deadline: Long,
+                                        request: PaymentRequest,
+                                        retryData: RetryRequestData = RetryRequestData(0, null, now())) {
+        logger.warn("[$accountName] Submitting payment request for payment $paymentId")
 
-            val transactionId = UUID.randomUUID()
+        val transactionId = UUID.randomUUID()
 
-            dbScope.launch {
-                dbInFlight.incrementAndGet()
-                paymentESService.update(paymentId) {
-                    it.logSubmission(success = true, transactionId, now(), Duration.ofMillis(now() - paymentStartedAt))
-                }
-                dbInFlight.decrementAndGet()
+        dbScope.launch {
+            dbInFlight.incrementAndGet()
+            paymentESService.update(paymentId) {
+                it.logSubmission(success = true, transactionId, now(), Duration.ofMillis(now() - paymentStartedAt))
             }
+            dbInFlight.decrementAndGet()
+        }
 
-            logger.info("[$accountName] Submit: $paymentId , txId: $transactionId")
+        logger.info("[$accountName] Submit: $paymentId , txId: $transactionId")
 
-            val request = Request.Builder().run {
-                url("http://$paymentProviderHostPort/external/process?serviceName=$serviceName&token=$token&accountName=$accountName&transactionId=$transactionId&paymentId=$paymentId&amount=$amount")
-                post(emptyBody)
-            }.build()
-            val url = request.url.toString()
+        val url = "http://$paymentProviderHostPort/external/process?serviceName=$serviceName&token=$token&accountName=$accountName&transactionId=$transactionId&paymentId=$paymentId&amount=$amount"
+        val timeout = computeDynamicTimeout(deadline) ?: 30000L
+        val httpRequest = HttpRequest.newBuilder()
+            .uri(URI(url))
+            .timeout(Duration.ofMillis(timeout))
+            .POST(HttpRequest.BodyPublishers.noBody())
+            .build()
 
-            var lastError: Exception? = null
-            var shouldContinue = true
+        externalPaymentRequests.increment()
 
-            var retryRequest = RetryRequestData(0, null, now())
-            externalPaymentRequests.increment()
-            while (retryManager.shouldRetry(retryRequest.startTime, deadline, retryRequest.attempt) && shouldContinue) {
-                retryRequest.delays = retryManager.computeDelays(retryRequest.startTime, deadline)
-                externalPaymentRequestsWithRetires.increment()
-                try {
-                    val timeout = computeDynamicTimeout(deadline)
+        client.sendAsync(httpRequest, java.net.http.HttpResponse.BodyHandlers.ofString())
+            .thenApply { resp ->
 
-                    val response: HttpResponse = client.post(url) {
-                        timeout {
-                            requestTimeoutMillis = 2 * (timeout ?: 10000L)
-                            socketTimeoutMillis = 2 * (timeout ?: 10000L)
-                            connectTimeoutMillis = 2 * (timeout ?: 10000L)
-                        }
-                    }
-
-//                    val latency = response.responseTime.timestamp - response.requestTime.timestamp
-//                    updateResponseLatencyData(latency)
-
-                    val body = runCatching {
-                        response.body<ExternalSysResponse>()
-                    }.getOrElse {
-                        ExternalSysResponse(
-                            transactionId.toString(),
-                            paymentId.toString(),
-                            result = false,
-                            message = "Bad JSON: ${it.message}"
-                        )
-                    }
-
-
-                    logger.warn("[$accountName] Payment processed for txId: $transactionId, payment: $paymentId, succeeded: ${body.result}, message: ${body.message}, code: ${response.status.value}")
-
-                    dbScope.launch {
-                        dbInFlight.incrementAndGet()
-                        paymentESService.update(paymentId) {
-                            it.logProcessing(body.result, now(), transactionId, reason = body.message)
-                        }
-                        dbInFlight.decrementAndGet()
-                    }
-
-                    if (body.result) {
-                        shouldContinue = false
-                        return
-                    } else {
-                        lastError = Exception(body.message)
-                        when (response.status.value) {
-                            429 -> {
-                                retryRequest.attempt = retryManager.onFailure(retryRequest.attempt, retryRequest.delays, retryRequest.startTime)
-                            }
-                            in 400..499 -> {
-                                logger.warn("[$accountName] Non-retriable HTTP error ${response.status.value} for txId: $transactionId")
-                                shouldContinue = false
-                            }
-                            else -> {
-                                retryRequest.attempt = retryManager.onFailure(retryRequest.attempt, retryRequest.delays, retryRequest.startTime)
-                            }
-                        }
-                    }
-                } catch (e: SocketTimeoutException) {
-                    logger.error("[$accountName] Timeout for txId: $transactionId, payment: $paymentId", e)
-                    lastError = e
-                    retryRequest.attempt = retryManager.onFailure(retryRequest.attempt, retryRequest.delays, retryRequest.startTime)
-                }  catch (e: HttpRequestTimeoutException) {
-                    logger.error("[$accountName] Timeout for txId: $transactionId, payment: $paymentId", e)
-                    lastError = e
-                    retryRequest.attempt = retryManager.onFailure(retryRequest.attempt, retryRequest.delays, retryRequest.startTime)
-                }catch (e: Exception) {
-                    logger.error("[$accountName] Payment failed for txId: $transactionId, payment: $paymentId", e)
-                    lastError = e
-                    retryRequest.attempt = retryManager.onFailure(retryRequest.attempt, retryRequest.delays, retryRequest.startTime)
-                } finally {
-//                    q50.set(calculateQuantiles()[0.5]?.toDouble())
-//                    q80.set(calculateQuantiles()[0.8]?.toDouble())
-//                    q95.set(calculateQuantiles()[0.95]?.toDouble())
-//                    q99.set(calculateQuantiles()[0.99]?.toDouble())
-                }
-            }
-
-            if (!shouldContinue) {
-                val reason = when {
-                    now() >= deadline -> "Deadline exceeded."
-                    lastError != null -> lastError.message ?: "Unknown error"
-                    else -> "Payment failed after retries."
+                val body = try {
+                    mapper.readValue(resp.body(), ExternalSysResponse::class.java)
+                } catch (e: Exception) {
+                    ExternalSysResponse(
+                        transactionId.toString(),
+                        paymentId.toString(),
+                        false,
+                        "Bad JSON: ${e.message}"
+                    )
                 }
 
                 dbScope.launch {
                     dbInFlight.incrementAndGet()
                     paymentESService.update(paymentId) {
-                        it.logProcessing(false, now(), transactionId, reason = reason)
+                        it.logProcessing(body.result, now(), transactionId)
                     }
                     dbInFlight.decrementAndGet()
                 }
 
-                logger.error("[$accountName] Payment failed after retries for txId: $transactionId, payment: $paymentId — reason: $reason")
+                if (body.result) {
+                    inFlightRequests.decrementAndGet()
+                    executorInFlight.decrementAndGet()
+                    return@thenApply null
+                }
+
+                handleRetry(
+                    resp.statusCode(),
+                    paymentId,
+                    amount,
+                    paymentStartedAt,
+                    deadline,
+                    request,
+                    retryData
+                )
+
+                null
+            }
+            .exceptionally { ex ->
+
+                val msg = ex.cause?.message ?: ex.message ?: "Unknown exception"
+
+                dbScope.launch {
+                    dbInFlight.incrementAndGet()
+                    paymentESService.update(paymentId) {
+                        it.logProcessing(false, now(), transactionId, reason = msg)
+                    }
+                    dbInFlight.decrementAndGet()
+                }
+
+                handleRetry(500, paymentId, amount, paymentStartedAt, deadline, request, retryData)
+
+                null
+            }
+    }
+
+    private fun handleRetry(
+        code: Int,
+        paymentId: UUID,
+        amount: Int,
+        paymentStartedAt: Long,
+        deadline: Long,
+        request: PaymentRequest,
+        retryData: RetryRequestData
+    ) {
+        externalPaymentRequestsWithRetires.increment()
+
+
+        if (!retryManager.shouldRetry(retryData.startTime, deadline, retryData.attempt)) {
+
+            dbScope.launch {
+                dbInFlight.incrementAndGet()
+                paymentESService.update(paymentId) {
+                    it.logProcessing(false, now(), UUID.randomUUID())
+                }
+                dbInFlight.decrementAndGet()
             }
 
-            if (now() > deadline) {
-                actualTimeout.increment()
-            }
-        } finally {
             inFlightRequests.decrementAndGet()
+            executorInFlight.decrementAndGet()
+            return
         }
+
+        retryData.delays = retryManager.computeDelays(retryData.startTime, deadline)
+        retryData.attempt = retryManager.onFailure(retryData.attempt, retryData.delays, retryData.startTime)
+
+        performPaymentWithRetry(paymentId, amount, paymentStartedAt, deadline, request, retryData)
     }
 
 //    private fun updateResponseLatencyData(latency: Long) {
@@ -439,7 +410,9 @@ class PaymentExternalSystemAdapterImpl(
                     theoreticalTimeout.increment()
                 }
 
-                performPaymentWithRetry(paymentRequest.paymentId, paymentRequest.amount, paymentRequest.paymentStartedAt, paymentRequest.deadline)
+                executorInFlight.incrementAndGet()
+                performPaymentWithRetry(paymentRequest.paymentId, paymentRequest.amount,
+                    paymentRequest.paymentStartedAt, paymentRequest.deadline, paymentRequest)
             } else {
                 actualTimeout.increment()
             }
