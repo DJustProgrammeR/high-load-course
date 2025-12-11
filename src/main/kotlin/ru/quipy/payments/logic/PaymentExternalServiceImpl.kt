@@ -28,6 +28,7 @@ import ru.quipy.payments.api.PaymentAggregate
 import java.net.SocketTimeoutException
 import java.time.Duration
 import java.util.*
+import java.util.concurrent.ConcurrentSkipListSet
 import java.util.concurrent.Executors
 import java.util.concurrent.PriorityBlockingQueue
 import java.util.concurrent.atomic.AtomicInteger
@@ -48,9 +49,6 @@ class PaymentExternalSystemAdapterImpl(
 
         val emptyBody = ByteArray(0).toRequestBody(null)
         val mapper = ObjectMapper().registerKotlinModule()
-
-        private const val THREAD_COUNT = 200
-        private const val DB_THREAD_COUNT = 200
     }
 
     private val serviceName = properties.serviceName
@@ -115,9 +113,8 @@ class PaymentExternalSystemAdapterImpl(
     )
 
 
-//    private val lock = Any()
     private val maxQueueSize = 1000 // hw 9 - 44000 elems approximately
-    private val queue = PriorityBlockingQueue<PaymentRequest>(maxQueueSize)
+    private val queue = ConcurrentSkipListSet<PaymentRequest>(compareBy { it.deadline })
 
     private val outgoingRateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofSeconds(1L))
     private val inFlightRequests = AtomicInteger(0)
@@ -126,7 +123,6 @@ class PaymentExternalSystemAdapterImpl(
         .description("Total number of queued requests")
         .tag("accountName", accountName)
         .register(Metrics.globalRegistry)
-
 
     val inFlightMetric = Gauge.builder("in_flight_requests", inFlightRequests) { it.get().toDouble() }
     .description("In flight requests")
@@ -220,14 +216,10 @@ class PaymentExternalSystemAdapterImpl(
         var canAccept = Pair(true,0L)
         var accepted = false
 
-//        synchronized(lock) {
-            canAccept = canAcceptPayment(deadline)
-            if (canAccept.first) {
-                accepted = queue.offer(paymentRequest)
-            }
-//        }
-
-        if (!canAccept.first) {
+        canAccept = canAcceptPayment(deadline)
+        if (canAccept.first) {
+            accepted = queue.add(paymentRequest)
+        } else {
             logger.error("429 from PaymentExternalSystemAdapterImpl")
             val delaySeconds = (canAccept.second - System.currentTimeMillis()) / 1000
             throw ResponseStatusException(
@@ -275,7 +267,7 @@ class PaymentExternalSystemAdapterImpl(
             var lastError: Exception? = null
             var shouldContinue = true
 
-            var retryRequest = RetryRequestData(0, null, now())
+            val retryRequest = RetryRequestData(0, null, now())
             externalPaymentRequests.increment()
             while (retryManager.shouldRetry(retryRequest.startTime, deadline, retryRequest.attempt) && shouldContinue) {
                 retryRequest.delays = retryManager.computeDelays(retryRequest.startTime, deadline)
@@ -418,7 +410,7 @@ class PaymentExternalSystemAdapterImpl(
     override fun name() = properties.accountName
 
     private fun pollQueue() {
-        val paymentRequest = queue.poll() ?: return
+        val paymentRequest = queue.pollFirst() ?: return
 
         if (inFlightRequests.incrementAndGet() > parallelRequests) {
             inFlightRequests.decrementAndGet()
