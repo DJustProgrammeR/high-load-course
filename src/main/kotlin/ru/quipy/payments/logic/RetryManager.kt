@@ -1,7 +1,9 @@
 package ru.quipy.payments.logic
 
+import kotlinx.coroutines.delay
 import kotlin.math.pow
 import kotlin.random.Random
+
 
 class RetryManager(
     private val maxRetries: Int,
@@ -9,49 +11,39 @@ class RetryManager(
     private val jitterMillis: Long = 50L,
     private val avgProcessingTime: Long = 1000L
 ) {
-    private var attempt = 0
-    private var delays: LongArray? = null
-    private var deadline: Long = 0
-    private var startTime: Long = 0
 
-    fun shouldRetry(currentTime: Long, deadline: Long): Boolean {
-        if (currentTime >= deadline) return false
+    fun shouldRetry(currentTime: Long, deadline: Long, attempt: Int): Boolean {
+        if (currentTime >= deadline - avgProcessingTime*1.02) return false
         if (attempt == maxRetries) return false
-        if (attempt == 0) {
-            this.deadline = deadline
-            this.startTime = currentTime
-            computeDelays()
-        }
         return true
     }
 
-    private fun computeDelays() {
+    fun computeDelays(startTime: Long, deadline: Long): LongArray? {
         val availableTime = deadline - startTime - avgProcessingTime
         if (availableTime <= 0) {
-            delays = LongArray(maxRetries) { 0 }
-            attempt = maxRetries
-            return
+            return null
         }
 
         val sumFactor = (backoffFactor.pow(maxRetries - 1) - 1) / (backoffFactor - 1)
         val baseDelay = availableTime / sumFactor
-        delays = LongArray(maxRetries) { i ->
+        return LongArray(maxRetries) { i ->
             if (i == maxRetries - 1) 0
             else (baseDelay * backoffFactor.pow(i.toDouble())).toLong()
         }
     }
 
-    fun onFailure() {
-        attempt++
-        val delay = if (attempt < maxRetries) {
-            delays?.getOrNull(attempt - 1) ?: 0
-        } else {
-            0
-        }
-        val jitter = Random.nextLong(0, jitterMillis + 1)
-        val totalDelay = delay + jitter + startTime - System.currentTimeMillis()
-        if (totalDelay > 0) {
-            Thread.sleep(totalDelay)
-        }
+    suspend fun onFailure(localAttempt: Int, delays: LongArray?, startTime: Long): Int {
+        val attempt = localAttempt + 1
+//        val delay = if (attempt < maxRetries) {
+//            delays?.getOrNull(attempt - 1) ?: 0
+//        } else {
+//            0
+//        }
+//        val jitter = Random.nextLong(0, jitterMillis + 1)
+//        val totalDelay = delay + jitter + startTime - System.currentTimeMillis()
+//        if (totalDelay > 0) {
+//            delay(totalDelay)
+//        }
+        return attempt
     }
 }
