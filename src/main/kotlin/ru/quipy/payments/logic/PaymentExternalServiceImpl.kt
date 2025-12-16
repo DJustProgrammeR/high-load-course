@@ -28,8 +28,10 @@ import ru.quipy.payments.api.PaymentAggregate
 import java.net.SocketTimeoutException
 import java.time.Duration
 import java.util.*
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.ConcurrentSkipListSet
 import java.util.concurrent.Executors
+import java.util.concurrent.LinkedBlockingDeque
 import java.util.concurrent.PriorityBlockingQueue
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
@@ -60,7 +62,7 @@ class PaymentExternalSystemAdapterImpl(
     private val parallelLimitPerSec = properties.parallelRequests.toDouble()/(properties.averageProcessingTime.toMillis() / 1000.0)
 
     private val minimalLimitPerSec = min(rateLimitPerSec, parallelLimitPerSec)
-//    private val responseLatencyHistoryQueueSize = 1100
+    private val responseLatencyHistoryQueueSize = 1100
     private val quantileMap: Map<String, Double> = mapOf(
         "acc-7" to 0.95,
         "acc-12" to 0.99,
@@ -85,7 +87,7 @@ class PaymentExternalSystemAdapterImpl(
         }
     }
 
-//    private val responseTime = LinkedBlockingDeque<Long>(responseLatencyHistoryQueueSize)
+    private val responseTime = ConcurrentLinkedQueue<Long>()
 
     private val scheduledExecutorScope = CoroutineScope(Executors.newSingleThreadExecutor().asCoroutineDispatcher())
 
@@ -101,7 +103,7 @@ class PaymentExternalSystemAdapterImpl(
 
     val retryManager = RetryManager(
         maxRetries = 2,
-        backoffFactor = 1.0,
+        backoffFactor = 5.0,
         jitterMillis = 0,
         avgProcessingTime = (actualRequestAverageProcessingTime)
     )
@@ -277,14 +279,14 @@ class PaymentExternalSystemAdapterImpl(
 
                     val response: HttpResponse = client.post(url) {
                         timeout {
-                            requestTimeoutMillis = 2 * (timeout ?: 10000L)
-                            socketTimeoutMillis = 2 * (timeout ?: 10000L)
-                            connectTimeoutMillis = 2 * (timeout ?: 10000L)
+                            requestTimeoutMillis = 2 * (timeout ?: 15000L)
+                            socketTimeoutMillis = 2 * (timeout ?: 15000L)
+                            connectTimeoutMillis = 2 * (timeout ?: 15000L)
                         }
                     }
 
-//                    val latency = response.responseTime.timestamp - response.requestTime.timestamp
-//                    updateResponseLatencyData(latency)
+                    val latency = response.responseTime.timestamp - response.requestTime.timestamp
+                    updateResponseLatencyData(latency)
 
                     val body = runCatching {
                         response.body<ExternalSysResponse>()
@@ -339,10 +341,10 @@ class PaymentExternalSystemAdapterImpl(
                     lastError = e
                     retryRequest.attempt = retryManager.onFailure(retryRequest.attempt, retryRequest.delays, retryRequest.startTime)
                 } finally {
-//                    q50.set(calculateQuantiles()[0.5]?.toDouble())
-//                    q80.set(calculateQuantiles()[0.8]?.toDouble())
-//                    q95.set(calculateQuantiles()[0.95]?.toDouble())
-//                    q99.set(calculateQuantiles()[0.99]?.toDouble())
+                    q50.set(calculateQuantiles()[0.5]?.toDouble())
+                    q80.set(calculateQuantiles()[0.8]?.toDouble())
+                    q95.set(calculateQuantiles()[0.95]?.toDouble())
+                    q99.set(calculateQuantiles()[0.99]?.toDouble())
                 }
             }
 
@@ -372,36 +374,36 @@ class PaymentExternalSystemAdapterImpl(
         }
     }
 
-//    private fun updateResponseLatencyData(latency: Long) {
-//        if (responseTime.size >= responseLatencyHistoryQueueSize-1) responseTime.pollFirst()
-//        responseTime.offerLast(latency)
-//    }
-
-    private fun computeDynamicTimeout(deadline: Long): Long? {
-        //val timeout = calculateQuantiles()[quantileMap[accountName]]?.coerceIn((requestAverageProcessingTime.toMillis()*1.5).toLong(),deadline - now())
-        return actualRequestAverageProcessingTime.coerceAtMost(deadline - now())
+    private fun updateResponseLatencyData(latency: Long) {
+        if (responseTime.size >= responseLatencyHistoryQueueSize-1) responseTime.poll()
+        responseTime.offer(latency)
     }
 
-//    private fun calculateQuantiles(): Map<Double, Long> {
-//        val quantiles = listOf(0.1,0.2,0.3,0.4,0.5, 0.8, 0.95, 0.99)
-//        val copy = responseTime.toList()
-//        val result = mutableMapOf<Double, Long>()
-//
-//        if (copy.isEmpty()) {
-//            quantiles.forEach { q ->
-//                result[q] = (q * (requestAverageProcessingTime.toMillis()).toDouble()).toLong()
-//            }
-//            return result
-//        }
-//
-//        val sorted = copy.sorted()
-//        quantiles.forEach { q ->
-//            val index = ((sorted.size - 1) * q).toInt().coerceIn(0, sorted.size - 1)
-//            result[q] = sorted[index]
-//        }
-//
-//        return result
-//    }
+    private fun computeDynamicTimeout(deadline: Long): Long? {
+        val timeout = calculateQuantiles()[quantileMap[accountName]]?.coerceIn((requestAverageProcessingTime.toMillis()*1.5).toLong(),deadline - now())
+        return timeout
+    }
+
+    private fun calculateQuantiles(): Map<Double, Long> {
+        val quantiles = listOf(0.5, 0.8, 0.95, 0.99)
+        val copy = responseTime.toList()
+        val result = mutableMapOf<Double, Long>()
+
+        if (copy.isEmpty()) {
+            quantiles.forEach { q ->
+                result[q] = (q * (requestAverageProcessingTime.toMillis()).toDouble()).toLong()
+            }
+            return result
+        }
+
+        val sorted = copy.sorted()
+        quantiles.forEach { q ->
+            val index = ((sorted.size - 1) * q).toInt().coerceIn(0, sorted.size - 1)
+            result[q] = sorted[index]
+        }
+
+        return result
+    }
 
     override fun price() = properties.price
 
@@ -447,4 +449,4 @@ class PaymentExternalSystemAdapterImpl(
     }
 }
 
-public fun now() = System.currentTimeMillis()
+fun now() = System.currentTimeMillis()
