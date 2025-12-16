@@ -63,7 +63,7 @@ class PaymentExternalSystemAdapterImpl(
     private val responseLatencyHistoryQueueSize = 1100
     private val quantileMap: Map<String, Double> = mapOf(
         "acc-7" to 0.95,
-        "acc-12" to 0.95,
+        "acc-12" to 0.99,
         "acc-16" to 0.3
     )
 
@@ -269,6 +269,7 @@ class PaymentExternalSystemAdapterImpl(
 
             val retryRequest = RetryRequestData(0, null, now())
             externalPaymentRequests.increment()
+
             while (retryManager.shouldRetry(retryRequest.startTime, deadline, retryRequest.attempt) && shouldContinue) {
                 retryRequest.delays = retryManager.computeDelays(retryRequest.startTime, deadline)
                 externalPaymentRequestsWithRetires.increment()
@@ -330,11 +331,11 @@ class PaymentExternalSystemAdapterImpl(
                     logger.error("[$accountName] Timeout for txId: $transactionId, payment: $paymentId", e)
                     lastError = e
                     retryRequest.attempt = retryManager.onFailure(retryRequest.attempt, retryRequest.delays, retryRequest.startTime)
-                }  catch (e: HttpRequestTimeoutException) {
+                } catch (e: HttpRequestTimeoutException) {
                     logger.error("[$accountName] Timeout for txId: $transactionId, payment: $paymentId", e)
                     lastError = e
                     retryRequest.attempt = retryManager.onFailure(retryRequest.attempt, retryRequest.delays, retryRequest.startTime)
-                }catch (e: Exception) {
+                } catch (e: Exception) {
                     logger.error("[$accountName] Payment failed for txId: $transactionId, payment: $paymentId", e)
                     lastError = e
                     retryRequest.attempt = retryManager.onFailure(retryRequest.attempt, retryRequest.delays, retryRequest.startTime)
