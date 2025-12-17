@@ -55,12 +55,12 @@ class PaymentExternalSystemAdapterImpl(
     private val accountName = properties.accountName
     private val requestAverageProcessingTime = properties.averageProcessingTime
     private val actualRequestAverageProcessingTime = (properties.averageProcessingTime.toMillis().toDouble()*1.0).toLong()
-    private val rateLimitPerSec = properties.rateLimitPerSec.toDouble()
+    private val rateLimitPerSec = properties.rateLimitPerSec.toDouble() * 0.95
     private val parallelRequests = properties.parallelRequests
     private val parallelLimitPerSec = properties.parallelRequests.toDouble()/(properties.averageProcessingTime.toMillis() / 1000.0)
 
     private val minimalLimitPerSec = min(rateLimitPerSec, parallelLimitPerSec)
-    private val responseLatencyHistoryQueueSize = 1100
+    private val responseLatencyHistoryQueueSize = properties.rateLimitPerSec
     private val quantileMap: Map<String, Double> = mapOf(
         "acc-7" to 0.95,
         "acc-12" to 0.99,
@@ -234,7 +234,7 @@ class PaymentExternalSystemAdapterImpl(
             paymentESService.update(paymentId) {
                 it.logProcessing(false, now(), UUID.randomUUID(), reason = "Queue overflow (back pressure).")
             }
-            val retryTimeMs = 5L
+            val retryTimeMs = 7L
             throw ResponseStatusException(
                 HttpStatus.TOO_MANY_REQUESTS,
                 retryTimeMs.toString()
@@ -379,8 +379,7 @@ class PaymentExternalSystemAdapterImpl(
     }
 
     private fun computeDynamicTimeout(deadline: Long): Long? {
-        val timeout = calculateQuantiles()[quantileMap[accountName]]?.coerceIn((requestAverageProcessingTime.toMillis()*1.5).toLong(),deadline - now())
-        return timeout
+        return calculateQuantiles()[quantileMap[accountName]]?.coerceIn((requestAverageProcessingTime.toMillis()*1.5).toLong(),deadline - now())
     }
 
     private fun calculateQuantiles(): Map<Double, Long> {
