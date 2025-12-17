@@ -36,7 +36,6 @@ class OrderPayer {
             )
         }
 
-
         val createdAt = System.currentTimeMillis()
         val createdEvent = paymentESService.create {
             it.create(

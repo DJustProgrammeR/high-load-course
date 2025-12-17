@@ -113,7 +113,7 @@ class PaymentExternalSystemAdapterImpl(
     )
 
 
-    private val maxQueueSize = 1000 // hw 9 - 44000 elems approximately
+    private val maxQueueSize = 3000 // hw 9 - 44000 elems approximately
     private val queue = ConcurrentSkipListSet<PaymentRequest>(compareBy { it.deadline })
 
     private val outgoingRateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofSeconds(1L))
@@ -171,7 +171,7 @@ class PaymentExternalSystemAdapterImpl(
     private val q50 = AtomicReference<Double>(0.0)
     private val q80 = AtomicReference<Double>(0.0)
     private val q95 = AtomicReference<Double>(0.0)
-    private val q99 = AtomicReference<Double>(0.0)
+    private val q99 = AtomicReference<Double>(30.0)
 
     init {
         Gauge.builder("external_request_latency", q50) { it.get() }
