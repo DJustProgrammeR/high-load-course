@@ -100,7 +100,7 @@ class PaymentExternalSystemAdapterImpl(
     )
 
     val retryManager = RetryManager(
-        maxRetries = 4,
+        maxRetries = 6,
         backoffFactor = 1.0,
         jitterMillis = 0,
         avgProcessingTime = (actualRequestAverageProcessingTime)
@@ -269,17 +269,18 @@ class PaymentExternalSystemAdapterImpl(
 
             val retryRequest = RetryRequestData(0, null, now())
             externalPaymentRequests.increment()
+            retryRequest.delays = retryManager.computeDelays(retryRequest.startTime, deadline)
             while (retryManager.shouldRetry(retryRequest.startTime, deadline, retryRequest.attempt) && shouldContinue) {
-                retryRequest.delays = retryManager.computeDelays(retryRequest.startTime, deadline)
                 externalPaymentRequestsWithRetires.increment()
                 try {
                     val timeout = computeDynamicTimeout(deadline)
 
+                    val multiplier = retryManager.multiplier(retryRequest.attempt)
                     val response: HttpResponse = client.post(url) {
                         timeout {
-                            requestTimeoutMillis = 2 * (timeout ?: 10000L)
-                            socketTimeoutMillis = 2 * (timeout ?: 10000L)
-                            connectTimeoutMillis = 2 * (timeout ?: 10000L)
+                            requestTimeoutMillis = multiplier * (timeout ?: 10000L)
+                            socketTimeoutMillis = multiplier * (timeout ?: 10000L)
+                            connectTimeoutMillis = multiplier * (timeout ?: 10000L)
                         }
                     }
 
