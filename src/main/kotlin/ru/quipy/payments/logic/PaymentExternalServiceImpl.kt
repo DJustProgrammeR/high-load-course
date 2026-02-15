@@ -100,7 +100,7 @@ class PaymentExternalSystemAdapterImpl(
     )
 
     val retryManager = RetryManager(
-        maxRetries = 2,
+        maxRetries = 4,
         backoffFactor = 1.0,
         jitterMillis = 0,
         avgProcessingTime = (actualRequestAverageProcessingTime)
@@ -113,7 +113,7 @@ class PaymentExternalSystemAdapterImpl(
     )
 
 
-    private val maxQueueSize = 1000 // hw 9 - 44000 elems approximately
+    private val maxQueueSize = 3000 // hw 9 - 44000 elems approximately
     private val queue = ConcurrentSkipListSet<PaymentRequest>(compareBy { it.deadline })
 
     private val outgoingRateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofSeconds(1L))
@@ -202,7 +202,7 @@ class PaymentExternalSystemAdapterImpl(
 
     override fun canAcceptPayment(deadline: Long): Pair<Boolean, Long> {
         val estimatedWaitMs = (queue.size / minimalLimitPerSec) * 1000
-        val additionalTimeMs = 1000
+        val additionalTimeMs = 0 // TODO: remove?
         val willCompleteAt = now() + estimatedWaitMs + additionalTimeMs + requestAverageProcessingTime.toMillis()
 
         val canMeetDeadline = willCompleteAt < deadline
@@ -410,17 +410,21 @@ class PaymentExternalSystemAdapterImpl(
     override fun name() = properties.accountName
 
     private fun pollQueue() {
-        val paymentRequest = queue.pollFirst() ?: return
+        if (queue.isEmpty()) return
 
         if (inFlightRequests.incrementAndGet() > parallelRequests) {
             inFlightRequests.decrementAndGet()
-            queue.add(paymentRequest)
             return
         }
 
         if (!outgoingRateLimiter.tick()) {
             inFlightRequests.decrementAndGet()
-            queue.add(paymentRequest)
+            return
+        }
+
+        val paymentRequest = queue.pollFirst()
+        if (paymentRequest == null) {
+            inFlightRequests.decrementAndGet()
             return
         }
 
