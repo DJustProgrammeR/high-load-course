@@ -1,5 +1,5 @@
 ### Run test remotely
-# @timeout 120
+# @timeout 1200
 POST http://77.234.215.138:34321/run
 Content-Type: application/json
 
