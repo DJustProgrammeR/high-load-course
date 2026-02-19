@@ -6,7 +6,7 @@ class AdaptiveTimeout(
     private val initialRtt: Double,
     private val maxTimeout: Double,
 ) {
-    private val alpha = 0.125      // как в TCP
+    private val alpha = 0.125
     private val beta = 0.25
 
     @Volatile private var srtt = initialRtt

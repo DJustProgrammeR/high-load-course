@@ -278,7 +278,7 @@ class PaymentExternalSystemAdapterImpl(
                 externalPaymentRequestsWithRetires.increment()
                 val timeout = computeDynamicTimeout(paymentRequest.deadline)
                 try {
-                    val multiplier = retryManager.multiplier(retryRequest.attempt)
+                    val multiplier = 1 // retryManager.multiplier(retryRequest.attempt)
 
                     val response: HttpResponse = client.post(url) {
                         timeout {
@@ -338,6 +338,7 @@ class PaymentExternalSystemAdapterImpl(
                 }  catch (e: HttpRequestTimeoutException) {
                     logger.error("[$accountName] Timeout for txId: $transactionId, payment: ${paymentRequest.paymentId}", e)
                     lastError = e
+                    adaptiveTimeout.record(2 * timeout)
                     retryRequest.attempt = retryManager.onFailure(retryRequest.attempt, retryRequest.delays, retryRequest.startTime)
                 }catch (e: Exception) {
                     logger.error("[$accountName] Payment failed for txId: $transactionId, payment: ${paymentRequest.paymentId}", e)
