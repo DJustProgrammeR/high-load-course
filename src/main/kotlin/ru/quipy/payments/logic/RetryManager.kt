@@ -10,7 +10,7 @@ class RetryManager(
     private val avgProcessingTime: Long = 1000L
 ) {
 
-    fun multiplier(attempt: Int): Long = listOf<Long>(3, 10, 25, 25, 50, 50)[attempt]
+    fun multiplier(attempt: Int): Long = listOf<Long>(1, 2, 3, 5, 10)[attempt]
 
     fun shouldRetry(currentTime: Long, deadline: Long, attempt: Int): Boolean {
         if (currentTime >= deadline - avgProcessingTime*1.02) return false

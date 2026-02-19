@@ -99,10 +99,15 @@ class PaymentExternalSystemAdapterImpl(
     )
 
     val retryManager = RetryManager(
-        maxRetries = 6,
+        maxRetries = 4,
         backoffFactor = 1.0,
         jitterMillis = 0,
         avgProcessingTime = (actualRequestAverageProcessingTime)
+    )
+
+    val adaptiveTimeout = AdaptiveTimeout(
+        initialRtt = 1.2 * properties.averageProcessingTime.toMillis().toDouble(),
+        maxTimeout = 1000.0 // TODO get value from test?
     )
 
     data class RetryRequestData(
@@ -271,20 +276,20 @@ class PaymentExternalSystemAdapterImpl(
             retryRequest.delays = retryManager.computeDelays(retryRequest.startTime, paymentRequest.deadline)
             while (retryManager.shouldRetry(retryRequest.startTime, paymentRequest.deadline, retryRequest.attempt) && shouldContinue) {
                 externalPaymentRequestsWithRetires.increment()
+                val timeout = computeDynamicTimeout(paymentRequest.deadline)
                 try {
-                    val timeout = computeDynamicTimeout(paymentRequest.deadline)
-
                     val multiplier = retryManager.multiplier(retryRequest.attempt)
+
                     val response: HttpResponse = client.post(url) {
                         timeout {
-                            requestTimeoutMillis = multiplier * (timeout ?: 10000L)
-                            socketTimeoutMillis = multiplier * (timeout ?: 10000L)
-                            connectTimeoutMillis = multiplier * (timeout ?: 10000L)
+                            requestTimeoutMillis = multiplier * timeout
+                            socketTimeoutMillis = multiplier * timeout
+                            connectTimeoutMillis = multiplier * timeout
                         }
                     }
 
-//                    val latency = response.responseTime.timestamp - response.requestTime.timestamp
-//                    updateResponseLatencyData(latency)
+                    val latency = response.responseTime.timestamp - response.requestTime.timestamp
+                    adaptiveTimeout.record(latency)
 
                     val body = runCatching {
                         response.body<ExternalSysResponse>()
@@ -379,9 +384,9 @@ class PaymentExternalSystemAdapterImpl(
 //        responseTime.offerLast(latency)
 //    }
 
-    private fun computeDynamicTimeout(deadline: Long): Long? {
+    private fun computeDynamicTimeout(deadline: Long): Long {
         //val timeout = calculateQuantiles()[quantileMap[accountName]]?.coerceIn((requestAverageProcessingTime.toMillis()*1.5).toLong(),deadline - now())
-        return actualRequestAverageProcessingTime.coerceAtMost(deadline - now())
+        return adaptiveTimeout.timeout().coerceAtMost(deadline - now())
     }
 
 //    private fun calculateQuantiles(): Map<Double, Long> {
