@@ -117,7 +117,7 @@ class PaymentExternalSystemAdapterImpl(
     )
 
 
-    private val maxQueueSize = 3000 // hw 9 - 44000 elems approximately
+    private val maxQueueSize = 5000 // hw 9 - 44000 elems approximately
     private val queue = ConcurrentSkipListSet<PaymentRequest>(compareBy { it.deadline })
 
     private val outgoingRateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofSeconds(1L))
