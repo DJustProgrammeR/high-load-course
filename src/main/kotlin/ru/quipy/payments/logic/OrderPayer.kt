@@ -28,7 +28,7 @@ class OrderPayer {
     fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long): Long {
         val (canAccept, estimatedWaitMs) = paymentService.canAcceptPayment(deadline)
         if (!canAccept) {
-            logger.error("429 from OrderPayer")
+            // logger.error("429 from OrderPayer")
             val delaySeconds = (estimatedWaitMs - System.currentTimeMillis()) / 1000
             throw ResponseStatusException(
                 HttpStatus.TOO_MANY_REQUESTS,
