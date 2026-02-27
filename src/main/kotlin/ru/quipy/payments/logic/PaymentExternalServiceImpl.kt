@@ -88,9 +88,7 @@ class PaymentExternalSystemAdapterImpl(
 
     val retryManager = RetryManager(
         maxRetries = 4,
-        backoffFactor = 1.0,
-        jitterMillis = 0,
-        avgProcessingTime = (actualRequestAverageProcessingTime)
+        avgProcessingTime = actualRequestAverageProcessingTime
     )
 
     val adaptiveTimeout = AdaptiveTimeout(
@@ -100,10 +98,8 @@ class PaymentExternalSystemAdapterImpl(
 
     data class RetryRequestData(
         var attempt: Int,
-        var delays: LongArray? = null,
         var startTime: Long
     )
-
 
     private val maxQueueSize = 4000
     private val timeoutWhenOverflow = 5L.toString()
@@ -128,15 +124,14 @@ class PaymentExternalSystemAdapterImpl(
 
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
         val paymentRequest = PaymentRequest(deadline, paymentId, amount, paymentStartedAt)
-        var canAccept = Pair(true,0L)
         var accepted = false
 
-        canAccept = canAcceptPayment(deadline)
+        val canAccept = canAcceptPayment(deadline)
         if (canAccept.first) {
             accepted = queue.add(paymentRequest)
         } else {
-            logger.error("429 from PaymentExternalSystemAdapterImpl")
-            val delaySeconds = (canAccept.second - now()) / 1000
+            logger.error("429 error, can't accept payment")
+            val delaySeconds = canAccept.second / 1000
             throw ResponseStatusException(
                 HttpStatus.TOO_MANY_REQUESTS,
                 delaySeconds.toString(),
@@ -181,11 +176,10 @@ class PaymentExternalSystemAdapterImpl(
             var shouldContinue = true
 
             val retryRequest = paymentRequest.retryRequestData
-            retryRequest.delays = retryManager.computeDelays(retryRequest.startTime, paymentRequest.deadline)
             while (retryManager.shouldRetry(retryRequest.startTime, paymentRequest.deadline, retryRequest.attempt) && shouldContinue) {
                 val timeout = computeDynamicTimeout(paymentRequest.deadline)
                 try {
-                    val multiplier = 1 // retryManager.multiplier(retryRequest.attempt)
+                    val multiplier = 1 // RetryManager.multiplier(retryRequest.attempt)
 
                     val response: HttpResponse = client.post(url) {
                         timeout {
@@ -224,32 +218,20 @@ class PaymentExternalSystemAdapterImpl(
                         return
                     } else {
                         lastError = Exception(body.message)
-                        when (response.status.value) {
-                            429 -> {
-                                retryRequest.attempt = retryManager.onFailure(retryRequest.attempt, retryRequest.delays, retryRequest.startTime)
-                            }
-                            in 400..499 -> {
-                                logger.warn("[$accountName] Non-retriable HTTP error ${response.status.value} for txId: $transactionId")
-                                shouldContinue = false
-                            }
-                            else -> {
-                                retryRequest.attempt = retryManager.onFailure(retryRequest.attempt, retryRequest.delays, retryRequest.startTime)
-                            }
+                        if (response.status.value in 400..<500 && response.status.value != 429) {
+                            logger.warn("[$accountName] Non-retriable HTTP error ${response.status.value} for txId: $transactionId")
+                            shouldContinue = false
                         }
                     }
                 } catch (e: SocketTimeoutException) {
                     logger.error("[$accountName] Timeout for txId: $transactionId, payment: ${paymentRequest.paymentId}", e)
                     lastError = e
-                    retryRequest.attempt = retryManager.onFailure(retryRequest.attempt, retryRequest.delays, retryRequest.startTime)
                 } catch (e: HttpRequestTimeoutException) {
                     logger.error("[$accountName] Timeout for txId: $transactionId, payment: ${paymentRequest.paymentId}", e)
                     lastError = e
-                    adaptiveTimeout.record(2 * timeout)
-                    retryRequest.attempt = retryManager.onFailure(retryRequest.attempt, retryRequest.delays, retryRequest.startTime)
                 } catch (e: Exception) {
                     logger.error("[$accountName] Payment failed for txId: $transactionId, payment: ${paymentRequest.paymentId}", e)
                     lastError = e
-                    retryRequest.attempt = retryManager.onFailure(retryRequest.attempt, retryRequest.delays, retryRequest.startTime)
                 }
             }
 
@@ -272,6 +254,7 @@ class PaymentExternalSystemAdapterImpl(
             }
 
             if (now() <= paymentRequest.deadline) {
+                retryRequest.attempt = RetryManager.onFailure(retryRequest.attempt)
                 queue.add(paymentRequest)
             }
         } finally {
@@ -289,6 +272,7 @@ class PaymentExternalSystemAdapterImpl(
 
     override fun name() = properties.accountName
 
+    @Suppress("unused")
     private val releaseJob = scheduledExecutorScope.launch {
         while (true) {
             pollQueue()
