@@ -218,19 +218,24 @@ class PaymentExternalSystemAdapterImpl(
                         return
                     } else {
                         lastError = Exception(body.message)
-                        if (response.status.value in 400..<500 && response.status.value != 429) {
+                        if (response.status.value in 400..499 && response.status.value != 429) {
                             logger.warn("[$accountName] Non-retriable HTTP error ${response.status.value} for txId: $transactionId")
                             shouldContinue = false
+                        } else {
+                            retryRequest.attempt = RetryManager.onFailure(retryRequest.attempt)
                         }
                     }
                 } catch (e: SocketTimeoutException) {
                     logger.error("[$accountName] Timeout for txId: $transactionId, payment: ${paymentRequest.paymentId}", e)
+                    retryRequest.attempt = RetryManager.onFailure(retryRequest.attempt)
                     lastError = e
                 } catch (e: HttpRequestTimeoutException) {
                     logger.error("[$accountName] Timeout for txId: $transactionId, payment: ${paymentRequest.paymentId}", e)
+                    retryRequest.attempt = RetryManager.onFailure(retryRequest.attempt)
                     lastError = e
                 } catch (e: Exception) {
                     logger.error("[$accountName] Payment failed for txId: $transactionId, payment: ${paymentRequest.paymentId}", e)
+                    retryRequest.attempt = RetryManager.onFailure(retryRequest.attempt)
                     lastError = e
                 }
             }
@@ -254,7 +259,6 @@ class PaymentExternalSystemAdapterImpl(
             }
 
             if (now() <= paymentRequest.deadline) {
-                retryRequest.attempt = RetryManager.onFailure(retryRequest.attempt)
                 queue.add(paymentRequest)
             }
         } finally {
