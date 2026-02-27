@@ -5,6 +5,6 @@ data class RetryRequestInfo(
     var startTime: Long
 ) {
     fun onFailure() {
-        attempt++
+        attempt = attempt.inc()
     }
 }
