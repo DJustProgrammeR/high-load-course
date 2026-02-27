@@ -204,26 +204,21 @@ class PaymentExternalSystemAdapterImpl(
                     if (body.result) {
                         shouldContinue = false
                         return
-                    } else {
-                        lastError = Exception(body.message)
-                        if (response.status.value in 400..499 && response.status.value != 429) {
-                            logger.warn("[$accountName] Non-retriable HTTP error ${response.status.value} for txId: $transactionId")
-                            shouldContinue = false
-                        } else {
-                            retryRequest.onFailure()
-                        }
+                    }
+
+                    lastError = Exception(body.message)
+                    if (response.status.value in 400..499 && response.status.value != 429) {
+                        logger.warn("[$accountName] Non-retriable HTTP error ${response.status.value} for txId: $transactionId")
+                        shouldContinue = false
                     }
                 } catch (e: SocketTimeoutException) {
                     logger.error("[$accountName] Timeout for txId: $transactionId, payment: ${paymentRequest.paymentId}", e)
-                    retryRequest.onFailure()
                     lastError = e
                 } catch (e: HttpRequestTimeoutException) {
                     logger.error("[$accountName] Timeout for txId: $transactionId, payment: ${paymentRequest.paymentId}", e)
-                    retryRequest.onFailure()
                     lastError = e
                 } catch (e: Exception) {
                     logger.error("[$accountName] Payment failed for txId: $transactionId, payment: ${paymentRequest.paymentId}", e)
-                    retryRequest.onFailure()
                     lastError = e
                 }
             }
