@@ -238,10 +238,10 @@ class PaymentExternalSystemAdapterImpl(
                 }
 
                 logger.error("[$accountName] Payment failed after retries for txId: $transactionId, payment: ${paymentRequest.paymentId} — reason: $reason")
-            }
-
-            if (now() <= paymentRequest.deadline) {
-                queue.add(paymentRequest)
+            } else {
+                if (now() <= paymentRequest.deadline) {
+                    queue.add(paymentRequest)
+                }
             }
         } finally {
             inFlightRequests.decrementAndGet()
