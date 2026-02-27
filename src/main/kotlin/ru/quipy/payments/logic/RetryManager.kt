@@ -10,7 +10,7 @@ class RetryManager(
 
     fun shouldRetry(currentTime: Long, deadline: Long, attempt: Int): Boolean {
         if (currentTime >= deadline - avgProcessingTime * 1.02) return false
-        if (attempt == maxRetries) return false
+        if (attempt >= maxRetries) return false
         return true
     }
 }

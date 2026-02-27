@@ -221,6 +221,7 @@ class PaymentExternalSystemAdapterImpl(
                     logger.error("[$accountName] Payment failed for txId: $transactionId, payment: ${paymentRequest.paymentId}", e)
                     lastError = e
                 }
+                retryRequest.onFailure()
             }
 
             if (!shouldContinue) {
@@ -240,7 +241,6 @@ class PaymentExternalSystemAdapterImpl(
             }
 
             if (now() <= paymentRequest.deadline) {
-                retryRequest.onFailure()
                 queue.add(paymentRequest)
             }
         } finally {
