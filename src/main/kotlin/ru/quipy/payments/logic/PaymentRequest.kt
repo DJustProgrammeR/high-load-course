@@ -8,7 +8,7 @@ data class PaymentRequest(
     val paymentId: UUID,
     val amount: Int,
     val paymentStartedAt: Long,
-    val retryRequestData: RetryRequestData = RetryRequestData(0, null, now()),
+    val retryRequestData: RetryRequestData = RetryRequestData(0, now()),
 ) : Comparable<PaymentRequest> {
     override fun compareTo(other: PaymentRequest): Int = deadline.compareTo(other.deadline)
 }
