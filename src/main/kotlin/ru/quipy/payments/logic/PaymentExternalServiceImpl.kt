@@ -67,7 +67,7 @@ class PaymentExternalSystemAdapterImpl(
     private val timeoutWhenOverflow = 0.5.toString()
     private val outgoingRateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong() * 2, Duration.ofSeconds(1L))
 
-    private val paymentQueue = PaymentDispatchLinkedQueue(
+    private val paymentQueue = PaymentDispatchQueue(
         outgoingRateLimiter,
         executorScope,
         parallelRequests,
