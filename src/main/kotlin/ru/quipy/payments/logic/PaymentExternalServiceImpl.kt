@@ -28,10 +28,12 @@ import java.util.*
 import java.util.concurrent.ConcurrentSkipListSet
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.math.ceil
 import kotlin.math.min
 
 
 // Advice: always treat time as a Duration
+@Suppress("Since15")
 class PaymentExternalSystemAdapterImpl(
     private val properties: PaymentAccountProperties,
     private val paymentESService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>,
@@ -88,10 +90,7 @@ class PaymentExternalSystemAdapterImpl(
 
     val retryManager = RetryManager(
         maxRetries = 4,
-        avgProcessingTime = (actualRequestAverageProcessingTime)
-    )
-
-    val adaptiveTimeout = AdaptiveTimeout(
+        avgProcessingTime = (actualRequestAverageProcessingTime),
         initialRtt = 1.2 * properties.averageProcessingTime.toMillis().toDouble(),
         maxTimeout = 1000.0 // TODO get value from test?
     )
@@ -105,13 +104,13 @@ class PaymentExternalSystemAdapterImpl(
     private val inFlightRequests = AtomicInteger(0)
 
     override fun canAcceptPayment(deadline: Long): Pair<Boolean, Long> {
-        val estimatedWaitMs = (queue.size / minimalLimitPerSec) * 1000
-        val willCompleteAt = now() + estimatedWaitMs + requestAverageProcessingTime.toMillis()
+        val estimatedWait = queue.size / minimalLimitPerSec
+        val willCompleteAt = now() + estimatedWait * 1000 + requestAverageProcessingTime.toMillis()
 
         val canMeetDeadline = willCompleteAt < deadline
         val queueOk = queue.size < maxQueueSize
 
-        return Pair(canMeetDeadline && queueOk, estimatedWaitMs.toLong())
+        return Pair(canMeetDeadline && queueOk, ceil( estimatedWait).toLong())
     }
 
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
@@ -123,7 +122,7 @@ class PaymentExternalSystemAdapterImpl(
             accepted = queue.add(paymentRequest)
         } else {
             logger.error("429 from PaymentExternalSystemAdapterImpl")
-            val delaySeconds = canAccept.second / 1000
+            val delaySeconds = canAccept.second
             throw ResponseStatusException(
                 HttpStatus.TOO_MANY_REQUESTS,
                 delaySeconds.toString(),
@@ -169,8 +168,7 @@ class PaymentExternalSystemAdapterImpl(
             while (retryManager.shouldRetry(retryRequest.startTime, paymentRequest.deadline, retryRequest.attempt) && shouldContinue) {
                 val timeout = computeDynamicTimeout(paymentRequest.deadline)
                 try {
-                    val multiplier = 1 // RetryManager.multiplier(retryRequest.attempt)
-
+                    val multiplier = retryManager.multiplier(retryRequest.attempt)
                     val response: HttpResponse = client.post(url) {
                         timeout {
                             requestTimeoutMillis = multiplier * timeout
@@ -180,7 +178,7 @@ class PaymentExternalSystemAdapterImpl(
                     }
 
                     val latency = response.responseTime.timestamp - response.requestTime.timestamp
-                    adaptiveTimeout.record(latency)
+                    retryManager.recordLatency(latency)
 
                     val body = runCatching {
                         response.body<ExternalSysResponse>()
@@ -220,7 +218,7 @@ class PaymentExternalSystemAdapterImpl(
                 } catch (e: HttpRequestTimeoutException) {
                     logger.error("[$accountName] Timeout for txId: $transactionId, payment: ${paymentRequest.paymentId}", e)
                     lastError = e
-                    adaptiveTimeout.record(2 * timeout)
+                    retryManager.recordLatency(2 * timeout)
                     retryRequest.onFailure()
                 } catch (e: Exception) {
                     logger.error("[$accountName] Payment failed for txId: $transactionId, payment: ${paymentRequest.paymentId}", e)
@@ -235,14 +233,14 @@ class PaymentExternalSystemAdapterImpl(
                     lastError != null -> lastError.message ?: "Unknown error"
                     else -> "Payment failed after retries."
                 }
+                logger.error("[$accountName] Payment failed after retries for txId: $transactionId, payment: ${paymentRequest.paymentId} — reason: $reason")
 
                 dbScope.launch {
                     paymentESService.update(paymentRequest.paymentId) {
                         it.logProcessing(false, now(), transactionId, reason = reason)
                     }
                 }
-
-                logger.error("[$accountName] Payment failed after retries for txId: $transactionId, payment: ${paymentRequest.paymentId} — reason: $reason")
+                return
             }
 
             if (now() < paymentRequest.deadline) {
@@ -254,7 +252,7 @@ class PaymentExternalSystemAdapterImpl(
     }
 
     private fun computeDynamicTimeout(deadline: Long): Long {
-        return adaptiveTimeout.timeout().coerceAtMost(deadline - now())
+        return retryManager.timeout().coerceAtMost(deadline - now())
     }
 
     override fun price() = properties.price
