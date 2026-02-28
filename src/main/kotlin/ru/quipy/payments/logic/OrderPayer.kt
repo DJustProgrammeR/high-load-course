@@ -23,8 +23,6 @@ class OrderPayer {
     @Autowired
     private lateinit var paymentService: PaymentService
 
-//    private var rateLimit = LeakingBucketQueueRateLimiter(1L, 91.milliseconds, 160)
-
     fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long): Long {
         val (canAccept, estimatedWaitMs) = paymentService.canAcceptPayment(deadline)
         if (!canAccept) {

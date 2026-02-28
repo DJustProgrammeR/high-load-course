@@ -38,10 +38,10 @@ class PaymentExternalSystemAdapterImpl(
 
     private val accountName = properties.accountName
     private val requestAverageProcessingTime = properties.averageProcessingTime
-    private val actualAverageProcessingTime = Duration.ofMillis(500) // properties.averageProcessingTime
+    private val actualAverageProcessingTime = Duration.ofMillis(50) // properties.averageProcessingTime
     private val rateLimitPerSec = properties.rateLimitPerSec.toDouble()
     private val parallelRequests = properties.parallelRequests
-    private val parallelLimitPerSec = properties.parallelRequests.toDouble()/(properties.averageProcessingTime.toSeconds() / 1000.0)
+    private val parallelLimitPerSec = properties.parallelRequests.toDouble()/actualAverageProcessingTime.toMillis()
 
     private val minimalLimitPerSec = min(rateLimitPerSec, parallelLimitPerSec)
 
