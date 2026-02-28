@@ -64,7 +64,7 @@ class PaymentExternalSystemAdapterImpl(
         maxTimeoutMs = Duration.ofSeconds(1).toMillis().toDouble() // TODO get value from test?
     )
 
-    private val timeoutWhenOverflow = 3L.toString()
+    private val timeoutWhenOverflow = 0.3.toString()
     private val outgoingRateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong() * 2, Duration.ofSeconds(1L))
 
     private val paymentQueue = PaymentDispatchBlockingQueue(
@@ -86,6 +86,12 @@ class PaymentExternalSystemAdapterImpl(
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
         val paymentRequest = PaymentRequest(deadline, paymentId, amount, paymentStartedAt)
         val canAccept = canAcceptPayment(deadline)
+
+        dbScope.launch {
+            paymentESService.update(paymentRequest.paymentId) {
+                it.logSubmission(success = true, paymentRequest.transactionId, now(), Duration.ofMillis(now() - paymentRequest.paymentStartedAt))
+            }
+        }
 
         if (!canAccept.first) {
             logger.error("429 from PaymentExternalSystemAdapterImpl")
@@ -111,11 +117,11 @@ class PaymentExternalSystemAdapterImpl(
     private suspend fun performPaymentWithRetry(paymentRequest: PaymentRequest) {
         logger.info("[$accountName] Submitting payment request for payment ${paymentRequest.paymentId}, txId: ${paymentRequest.transactionId}")
 
-        dbScope.launch {
-            paymentESService.update(paymentRequest.paymentId) {
-                it.logSubmission(success = true, paymentRequest.transactionId, now(), Duration.ofMillis(now() - paymentRequest.paymentStartedAt))
-            }
-        }
+//        dbScope.launch {
+//            paymentESService.update(paymentRequest.paymentId) {
+//                it.logSubmission(success = true, paymentRequest.transactionId, now(), Duration.ofMillis(now() - paymentRequest.paymentStartedAt))
+//            }
+//        }
 
         val retryRequest = paymentRequest.retryRequestInfo
         while (retryManager.shouldRetry(retryRequest, paymentRequest.deadline)) {
