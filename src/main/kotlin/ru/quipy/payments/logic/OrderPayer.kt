@@ -28,16 +28,13 @@ class OrderPayer {
     fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long): Long {
         val (canAccept, estimatedWaitMs) = paymentService.canAcceptPayment(deadline)
         if (!canAccept) {
-            // logger.error("429 from OrderPayer")
-            val delaySeconds = (estimatedWaitMs - System.currentTimeMillis()) / 1000
+            val delaySeconds = (estimatedWaitMs - now()).toDouble() / 1000.0
             throw ResponseStatusException(
                 HttpStatus.TOO_MANY_REQUESTS,
                 delaySeconds.toString()
             )
         }
 
-
-        val createdAt = System.currentTimeMillis()
         val createdEvent = paymentESService.create {
             it.create(
                 paymentId,
@@ -47,7 +44,7 @@ class OrderPayer {
         }
         logger.trace("Payment {} for order {} created.", createdEvent.paymentId, orderId)
 
-        paymentService.submitPaymentRequest(paymentId, amount, createdAt, deadline)
-        return createdAt
+        paymentService.submitPaymentRequest(paymentId, amount, now(), deadline)
+        return now()
     }
 }

@@ -44,15 +44,15 @@ class PaymentDispatchQueue(
     private fun poll() {
         if (queue.isEmpty()) return
 
-        if (inFlight.incrementAndGet() > parallelRequests * 2) {
+        if (inFlight.incrementAndGet() > parallelRequests) {
             inFlight.decrementAndGet()
             return
         }
 
-        if (!rateLimiter.tick()) {
-            inFlight.decrementAndGet()
-            return
-        }
+//        if (!rateLimiter.tick()) {
+//            inFlight.decrementAndGet()
+//            return
+//        }
 
         val request = queue.pollFirst() ?: run {
             inFlight.decrementAndGet()
