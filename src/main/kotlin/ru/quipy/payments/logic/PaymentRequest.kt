@@ -8,6 +8,7 @@ data class PaymentRequest(
     val amount: Int,
     val paymentStartedAt: Long,
     val retryRequestInfo: RetryRequestInfo = RetryRequestInfo(0, now()),
+    val transactionId : UUID = UUID.randomUUID()
 ) : Comparable<PaymentRequest> {
     override fun compareTo(other: PaymentRequest): Int = deadline.compareTo(other.deadline)
 }
