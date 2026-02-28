@@ -26,9 +26,9 @@ class PaymentDispatchQueue(
     fun size(): Int = queue.size
 
     fun start(scope: CoroutineScope) {
-        scope.launch {
-            while (true) {
-                poll()
+        repeat(Runtime.getRuntime().availableProcessors()) {
+            scope.launch {
+                while (true) poll()
             }
         }
     }
