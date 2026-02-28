@@ -52,7 +52,7 @@ class PaymentExternalSystemAdapterImpl(
     private val serviceName = properties.serviceName
     private val accountName = properties.accountName
     private val requestAverageProcessingTime = properties.averageProcessingTime
-    private val actualRequestAverageProcessingTime = properties.averageProcessingTime.toMillis()
+    private val actualRequestAverageProcessingTime = 50L // properties.averageProcessingTime.toMillis()
     private val rateLimitPerSec = properties.rateLimitPerSec.toDouble()
     private val parallelRequests = properties.parallelRequests
     private val parallelLimitPerSec = properties.parallelRequests.toDouble()/(properties.averageProcessingTime.toSeconds() / 1000.0)
@@ -96,8 +96,8 @@ class PaymentExternalSystemAdapterImpl(
         maxTimeout = 1000.0 // TODO get value from test?
     )
 
-    private val maxQueueSize = 8000
-    private val timeoutWhenOverflow = 5L.toString()
+    private val maxQueueSize = 5000
+    private val timeoutWhenOverflow = 3L.toString()
 
     private val queue = ConcurrentSkipListSet<PaymentRequest>(compareBy { it.deadline })
 
