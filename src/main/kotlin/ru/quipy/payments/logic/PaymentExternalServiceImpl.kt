@@ -64,8 +64,8 @@ class PaymentExternalSystemAdapterImpl(
         maxTimeoutMs = Duration.ofSeconds(1).toMillis().toDouble() // TODO get value from test?
     )
 
-    private val timeoutWhenOverflow = 0.5.toString()
-    private val outgoingRateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong() * 2, Duration.ofSeconds(1L))
+    private val timeoutWhenOverflow = 3L.toString()
+    private val outgoingRateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofSeconds(1L))
 
     private val paymentQueue = PaymentDispatchQueue(
         outgoingRateLimiter,

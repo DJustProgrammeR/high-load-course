@@ -44,7 +44,7 @@ class PaymentDispatchQueue(
     private fun poll() {
         if (queue.isEmpty()) return
 
-        if (inFlight.incrementAndGet() > parallelRequests * 3) {
+        if (inFlight.incrementAndGet() > parallelRequests) {
             inFlight.decrementAndGet()
             return
         }
