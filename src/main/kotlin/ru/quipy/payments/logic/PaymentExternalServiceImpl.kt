@@ -18,10 +18,7 @@ import ru.quipy.payments.api.PaymentAggregate
 import java.net.SocketTimeoutException
 import java.time.Duration
 import java.util.*
-import java.util.concurrent.ConcurrentSkipListSet
 import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicInteger
-import kotlin.math.ceil
 import kotlin.math.min
 
 
@@ -41,16 +38,14 @@ class PaymentExternalSystemAdapterImpl(
 
     private val accountName = properties.accountName
     private val requestAverageProcessingTime = properties.averageProcessingTime
-    private val actualRequestAverageProcessingTime = Duration.ofMillis(50) // properties.averageProcessingTime
+    private val actualAverageProcessingTime = Duration.ofMillis(50) // properties.averageProcessingTime
     private val rateLimitPerSec = properties.rateLimitPerSec.toDouble()
     private val parallelRequests = properties.parallelRequests
     private val parallelLimitPerSec = properties.parallelRequests.toDouble()/(properties.averageProcessingTime.toSeconds() / 1000.0)
 
     private val minimalLimitPerSec = min(rateLimitPerSec, parallelLimitPerSec)
 
-    private val client = PaymentHttpClient(actualRequestAverageProcessingTime, properties, paymentProviderHostPort, token)
-
-    private val scheduledExecutorScope = CoroutineScope(Executors.newSingleThreadExecutor().asCoroutineDispatcher())
+    private val client = PaymentHttpClient(actualAverageProcessingTime, properties, paymentProviderHostPort, token)
 
     @OptIn(DelicateCoroutinesApi::class)
     private val executorScope = CoroutineScope(
@@ -64,27 +59,28 @@ class PaymentExternalSystemAdapterImpl(
 
     val retryManager = RetryManager(
         maxRetries = 4,
-        avgProcessingTimeMs = actualRequestAverageProcessingTime.toMillis(),
+        avgProcessingTimeMs = actualAverageProcessingTime.toMillis(),
         initialRttMs = 1.2 * properties.averageProcessingTime.toMillis().toDouble(),
         maxTimeoutMs = 1000.0 // TODO get value from test?
     )
 
-    private val maxQueueSize = 5000
     private val timeoutWhenOverflow = 3L.toString()
-
-    private val queue = ConcurrentSkipListSet<PaymentRequest>(compareBy { it.deadline })
-
     private val outgoingRateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofSeconds(1L))
-    private val inFlightRequests = AtomicInteger(0)
 
-    override fun canAcceptPayment(deadline: Long): Pair<Boolean, Long> {
-        val estimatedWait = queue.size / minimalLimitPerSec
-        val willCompleteAt = now() + estimatedWait * 1000 + requestAverageProcessingTime.toMillis()
+    private val paymentQueue = PaymentDispatchQueue(
+        outgoingRateLimiter,
+        executorScope,
+        parallelRequests,
+        actualAverageProcessingTime,
+        minimalLimitPerSec
+    ) { request ->
+        performPaymentWithRetry(request)
+    }
 
-        val canMeetDeadline = willCompleteAt < deadline
-        val queueOk = queue.size < maxQueueSize
-
-        return Pair(canMeetDeadline && queueOk, ceil( estimatedWait).toLong())
+    init {
+        paymentQueue.start(
+            CoroutineScope(Executors.newSingleThreadExecutor().asCoroutineDispatcher())
+        )
     }
 
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
@@ -100,7 +96,7 @@ class PaymentExternalSystemAdapterImpl(
             )
         }
 
-        if (!queue.add(paymentRequest)) {
+        if (!paymentQueue.enqueue(paymentRequest)) {
             logger.error("[$accountName] Queue overflow! Rejecting payment $paymentId")
             paymentESService.update(paymentId) {
                 it.logProcessing(false, now(), paymentRequest.transactionId, reason = "Queue overflow (back pressure).")
@@ -113,47 +109,43 @@ class PaymentExternalSystemAdapterImpl(
     }
 
     private suspend fun performPaymentWithRetry(paymentRequest: PaymentRequest) {
-        try {
-            logger.info("[$accountName] Submitting payment request for payment ${paymentRequest.paymentId}, txId: ${paymentRequest.transactionId}")
+        logger.info("[$accountName] Submitting payment request for payment ${paymentRequest.paymentId}, txId: ${paymentRequest.transactionId}")
 
-            dbScope.launch {
-                paymentESService.update(paymentRequest.paymentId) {
-                    it.logSubmission(success = true, paymentRequest.transactionId, now(), Duration.ofMillis(now() - paymentRequest.paymentStartedAt))
+        dbScope.launch {
+            paymentESService.update(paymentRequest.paymentId) {
+                it.logSubmission(success = true, paymentRequest.transactionId, now(), Duration.ofMillis(now() - paymentRequest.paymentStartedAt))
+            }
+        }
+
+        val retryRequest = paymentRequest.retryRequestInfo
+        while (retryManager.shouldRetry(retryRequest, paymentRequest.deadline)) {
+            val timeout = retryManager.computeDynamicTimeout(paymentRequest.deadline)
+
+            when (val result = executeAttempt(paymentRequest, timeout)) {
+                is AttemptResult.Success -> {
+                    return
+                }
+                is AttemptResult.NonRetryableFailure -> {
+                    logger.warn("[$accountName] Non-retriable HTTP error ${result.statusCode} for txId: ${paymentRequest.transactionId}")
+                    return
+                }
+                is AttemptResult.RetryableFailure -> {
+                    retryRequest.onRetryableFailure()
                 }
             }
+        }
 
-            val retryRequest = paymentRequest.retryRequestInfo
-            while (retryManager.shouldRetry(retryRequest, paymentRequest.deadline)) {
-                val timeout = retryManager.computeDynamicTimeout(paymentRequest.deadline)
+        val reason = when {
+            now() >= paymentRequest.deadline -> "Deadline exceeded after ${retryRequest.attempt} retries"
+            else -> "All retry attempts (${retryRequest.attempt}) exhausted"
+        }
 
-                when (val result = executeAttempt(paymentRequest, timeout)) {
-                    is AttemptResult.Success -> {
-                        return
-                    }
-                    is AttemptResult.NonRetryableFailure -> {
-                        logger.warn("[$accountName] Non-retriable HTTP error ${result.statusCode} for txId: ${paymentRequest.transactionId}")
-                        return
-                    }
-                    is AttemptResult.RetryableFailure -> {
-                        retryRequest.onRetryableFailure()
-                    }
-                }
+        logger.error("[$accountName] Payment failed after retries for txId: ${paymentRequest.transactionId}, payment: ${paymentRequest.paymentId} — reason: $reason")
+
+        dbScope.launch {
+            paymentESService.update(paymentRequest.paymentId) {
+                it.logProcessing(false, now(), paymentRequest.transactionId, reason = reason)
             }
-
-            val reason = when {
-                now() >= paymentRequest.deadline -> "Deadline exceeded after ${retryRequest.attempt} retries"
-                else -> "All retry attempts (${retryRequest.attempt}) exhausted"
-            }
-
-            logger.error("[$accountName] Payment failed after retries for txId: ${paymentRequest.transactionId}, payment: ${paymentRequest.paymentId} — reason: $reason")
-
-            dbScope.launch {
-                paymentESService.update(paymentRequest.paymentId) {
-                    it.logProcessing(false, now(), paymentRequest.transactionId, reason = reason)
-                }
-            }
-        } finally {
-            inFlightRequests.decrementAndGet()
         }
     }
 
@@ -218,37 +210,8 @@ class PaymentExternalSystemAdapterImpl(
 
     override fun name() = properties.accountName
 
-    @Suppress("unused")
-    private val releaseJob = scheduledExecutorScope.launch {
-        while (true) {
-            pollQueue()
-        }
-    }
-
-    private fun pollQueue() {
-        if (queue.isEmpty()) return
-
-        if (inFlightRequests.incrementAndGet() > parallelRequests) {
-            inFlightRequests.decrementAndGet()
-            return
-        }
-
-        if (!outgoingRateLimiter.tick()) {
-            inFlightRequests.decrementAndGet()
-            return
-        }
-
-        val paymentRequest = queue.pollFirst()
-        if (paymentRequest == null) {
-            inFlightRequests.decrementAndGet()
-            return
-        }
-
-        executorScope.launch {
-            if (now() < paymentRequest.deadline) {
-                performPaymentWithRetry(paymentRequest)
-            }
-        }
+    override fun canAcceptPayment(deadline: Long): Pair<Boolean, Long> {
+        return paymentQueue.canAcceptPayment(deadline)
     }
 }
 
