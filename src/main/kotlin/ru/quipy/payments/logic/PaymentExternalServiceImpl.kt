@@ -161,14 +161,13 @@ class PaymentExternalSystemAdapterImpl(
             }.build()
             val url = request.url.toString()
 
-            var lastError: Exception? = null
-            var shouldContinue = true
-
             val retryRequest = paymentRequest.retryRequestInfo
-            while (retryManager.shouldRetry(retryRequest.startTime, paymentRequest.deadline, retryRequest.attempt) && shouldContinue) {
+
+            while (retryManager.shouldRetry(retryRequest.startTime, paymentRequest.deadline, retryRequest.attempt)) {
                 val timeout = computeDynamicTimeout(paymentRequest.deadline)
+
                 try {
-                    val multiplier = retryManager.multiplier(retryRequest.attempt)
+                    val multiplier = retryManager.getMultiplier()
                     val response: HttpResponse = client.post(url) {
                         timeout {
                             requestTimeoutMillis = multiplier * timeout
@@ -199,52 +198,41 @@ class PaymentExternalSystemAdapterImpl(
                         }
                     }
 
-                    if (body.result) {
-                        shouldContinue = false
+                    if (response.status.value in 400..499 && response.status.value != 429) {
+                        logger.warn("[$accountName] Non-retriable HTTP error ${response.status.value} for txId: $transactionId")
+
+                        val reason = "HTTP ${response.status.value}: ${body.message}"
+                        dbScope.launch {
+                            paymentESService.update(paymentRequest.paymentId) {
+                                it.logProcessing(false, now(), transactionId, reason = reason)
+                            }
+                        }
                         return
                     }
 
-                    lastError = Exception(body.message)
-                    if (response.status.value in 400..499 && response.status.value != 429) {
-                        logger.warn("[$accountName] Non-retriable HTTP error ${response.status.value} for txId: $transactionId")
-                        shouldContinue = false
-                    } else {
-                        retryRequest.onFailure()
-                    }
                 } catch (e: SocketTimeoutException) {
                     logger.error("[$accountName] Timeout for txId: $transactionId, payment: ${paymentRequest.paymentId}", e)
-                    lastError = e
-                    retryRequest.onFailure()
+                    retryManager.recordLatency(2 * timeout)
                 } catch (e: HttpRequestTimeoutException) {
                     logger.error("[$accountName] Timeout for txId: $transactionId, payment: ${paymentRequest.paymentId}", e)
-                    lastError = e
                     retryManager.recordLatency(2 * timeout)
-                    retryRequest.onFailure()
                 } catch (e: Exception) {
                     logger.error("[$accountName] Payment failed for txId: $transactionId, payment: ${paymentRequest.paymentId}", e)
-                    lastError = e
-                    retryRequest.onFailure()
                 }
+                retryRequest.onRetryableFailure()
             }
 
-            if (!shouldContinue) {
-                val reason = when {
-                    now() >= paymentRequest.deadline -> "Deadline exceeded."
-                    lastError != null -> lastError.message ?: "Unknown error"
-                    else -> "Payment failed after retries."
-                }
-                logger.error("[$accountName] Payment failed after retries for txId: $transactionId, payment: ${paymentRequest.paymentId} — reason: $reason")
-
-                dbScope.launch {
-                    paymentESService.update(paymentRequest.paymentId) {
-                        it.logProcessing(false, now(), transactionId, reason = reason)
-                    }
-                }
-                return
+            val reason = when {
+                now() >= paymentRequest.deadline -> "Deadline exceeded after ${retryRequest.attempt} retries"
+                else -> "All retry attempts (${retryRequest.attempt}) exhausted"
             }
 
-            if (now() < paymentRequest.deadline) {
-                queue.add(paymentRequest)
+            logger.error("[$accountName] Payment failed after retries for txId: $transactionId, payment: ${paymentRequest.paymentId} — reason: $reason")
+
+            dbScope.launch {
+                paymentESService.update(paymentRequest.paymentId) {
+                    it.logProcessing(false, now(), transactionId, reason = reason)
+                }
             }
         } finally {
             inFlightRequests.decrementAndGet()
