@@ -27,7 +27,9 @@ class PaymentDispatchQueue(
 
     fun start(scope: CoroutineScope) {
         scope.launch {
-            while (true) poll()
+            while (true) {
+                poll()
+            }
         }
     }
 
