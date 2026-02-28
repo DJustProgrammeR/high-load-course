@@ -26,10 +26,8 @@ class PaymentDispatchQueue(
     fun size(): Int = queue.size
 
     fun start(scope: CoroutineScope) {
-        repeat(Runtime.getRuntime().availableProcessors()) {
-            scope.launch {
-                while (true) poll()
-            }
+        scope.launch {
+            while (true) poll()
         }
     }
 
@@ -46,7 +44,7 @@ class PaymentDispatchQueue(
     private fun poll() {
         if (queue.isEmpty()) return
 
-        if (inFlight.incrementAndGet() > parallelRequests) {
+        if (inFlight.incrementAndGet() > parallelRequests * 2) {
             inFlight.decrementAndGet()
             return
         }

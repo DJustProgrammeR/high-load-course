@@ -15,7 +15,6 @@ class ParallelLimiterConfiguration {
             .associateBy(PaymentAccountProperties::accountName)
             .mapValues {
                 when (it.key) {
-                    "acc-5" -> SemaphoreParallelLimiter(it.value.parallelRequests)
                     else -> null
                 }
             }

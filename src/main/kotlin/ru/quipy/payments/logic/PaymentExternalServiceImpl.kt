@@ -72,7 +72,7 @@ class PaymentExternalSystemAdapterImpl(
         executorScope,
         parallelRequests,
         actualAverageProcessingTime,
-        4000.0 // minimalLimitPerSec
+        minimalLimitPerSec
     ) { request ->
         performPaymentWithRetry(request)
     }
