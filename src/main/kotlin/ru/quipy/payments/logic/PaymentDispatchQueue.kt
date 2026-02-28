@@ -49,10 +49,10 @@ class PaymentDispatchQueue(
             return
         }
 
-//        if (!rateLimiter.tick()) {
-//            inFlight.decrementAndGet()
-//            return
-//        }
+        if (!rateLimiter.tick()) {
+            inFlight.decrementAndGet()
+            return
+        }
 
         val request = queue.pollFirst() ?: run {
             inFlight.decrementAndGet()
