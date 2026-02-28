@@ -92,7 +92,7 @@ class PaymentExternalSystemAdapterImpl(
             val delaySeconds = canAccept.second
             throw ResponseStatusException(
                 HttpStatus.TOO_MANY_REQUESTS,
-                delaySeconds.toString(),
+                String.format("%.1f", delaySeconds),
             )
         }
 
