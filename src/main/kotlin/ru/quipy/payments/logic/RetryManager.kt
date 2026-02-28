@@ -25,6 +25,10 @@ class RetryManager(
         return true
     }
 
+    fun computeDynamicTimeout(deadline: Long): Long {
+        return timeout().coerceAtMost(deadline - now())
+    }
+
     fun recordLatency(latencyMs: Long) {
         val l = latencyMs.toDouble()
 
@@ -33,7 +37,7 @@ class RetryManager(
         srtt = (1 - alpha) * srtt + alpha * l
     }
 
-    fun timeout(): Long {
+    private fun timeout(): Long {
         val rto = srtt + 4 * rttvar
         return rto.coerceIn(initialRtt / 2, maxTimeout).toLong()
     }

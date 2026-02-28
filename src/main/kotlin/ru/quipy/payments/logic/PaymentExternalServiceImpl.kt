@@ -55,7 +55,7 @@ class PaymentExternalSystemAdapterImpl(
     private val actualRequestAverageProcessingTime = properties.averageProcessingTime.toMillis()
     private val rateLimitPerSec = properties.rateLimitPerSec.toDouble()
     private val parallelRequests = properties.parallelRequests
-    private val parallelLimitPerSec = properties.parallelRequests.toDouble()/(properties.averageProcessingTime.toMillis() / 1000.0)
+    private val parallelLimitPerSec = properties.parallelRequests.toDouble()/(properties.averageProcessingTime.toSeconds() / 1000.0)
 
     private val minimalLimitPerSec = min(rateLimitPerSec, parallelLimitPerSec)
 
@@ -96,7 +96,7 @@ class PaymentExternalSystemAdapterImpl(
         maxTimeout = 1000.0 // TODO get value from test?
     )
 
-    private val maxQueueSize = 4000
+    private val maxQueueSize = 8000
     private val timeoutWhenOverflow = 5L.toString()
 
     private val queue = ConcurrentSkipListSet<PaymentRequest>(compareBy { it.deadline })
@@ -158,7 +158,7 @@ class PaymentExternalSystemAdapterImpl(
 
             val retryRequest = paymentRequest.retryRequestInfo
             while (retryManager.shouldRetry(retryRequest, paymentRequest.deadline)) {
-                val timeout = computeDynamicTimeout(paymentRequest.deadline)
+                val timeout = retryManager.computeDynamicTimeout(paymentRequest.deadline)
 
                 when (val result = executeAttempt(paymentRequest, transactionId, url, timeout)) {
                     is AttemptResult.Success -> {
@@ -252,10 +252,6 @@ class PaymentExternalSystemAdapterImpl(
         data class Success(val body: ExternalSysResponse) : AttemptResult()
         data class NonRetryableFailure(val body: ExternalSysResponse, val statusCode: Int) : AttemptResult()
         data class RetryableFailure(val body: ExternalSysResponse?, val error: Throwable? = null) : AttemptResult()
-    }
-
-    private fun computeDynamicTimeout(deadline: Long): Long {
-        return retryManager.timeout().coerceAtMost(deadline - now())
     }
 
     override fun price() = properties.price
