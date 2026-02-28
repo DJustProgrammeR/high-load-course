@@ -53,7 +53,7 @@ class PaymentDispatchBlockingQueue(
                 return
             }
 
-            if (inFlight.incrementAndGet() > parallelRequests * 3) { // ???
+            if (inFlight.incrementAndGet() > parallelRequests) {
                 inFlight.decrementAndGet()
                 queue.offer(request)
                 return
