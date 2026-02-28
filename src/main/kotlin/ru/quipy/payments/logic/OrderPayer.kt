@@ -24,12 +24,11 @@ class OrderPayer {
     private lateinit var paymentService: PaymentService
 
     fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long): Long {
-        val (canAccept, estimatedWaitMs) = paymentService.canAcceptPayment(deadline)
+        val (canAccept, delaySeconds) = paymentService.canAcceptPayment(deadline)
         if (!canAccept) {
-            val delaySeconds = (estimatedWaitMs) / 1000.0
             throw ResponseStatusException(
                 HttpStatus.TOO_MANY_REQUESTS,
-                String.format("%.1f", delaySeconds)
+                delaySeconds.toString()
             )
         }
 
