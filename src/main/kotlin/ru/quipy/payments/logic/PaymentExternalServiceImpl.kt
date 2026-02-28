@@ -198,7 +198,11 @@ class PaymentExternalSystemAdapterImpl(
                         }
                     }
 
-                    if (response.status.value in 400..499 && response.status.value != 429) {
+                    if (body.result) { // Success
+                        return
+                    }
+
+                    if (response.status.value in 400..499 && response.status.value != 429) { // Non retryable failure
                         logger.warn("[$accountName] Non-retriable HTTP error ${response.status.value} for txId: $transactionId")
 
                         val reason = "HTTP ${response.status.value}: ${body.message}"
@@ -212,7 +216,6 @@ class PaymentExternalSystemAdapterImpl(
 
                 } catch (e: SocketTimeoutException) {
                     logger.error("[$accountName] Timeout for txId: $transactionId, payment: ${paymentRequest.paymentId}", e)
-                    retryManager.recordLatency(2 * timeout)
                 } catch (e: HttpRequestTimeoutException) {
                     logger.error("[$accountName] Timeout for txId: $transactionId, payment: ${paymentRequest.paymentId}", e)
                     retryManager.recordLatency(2 * timeout)
