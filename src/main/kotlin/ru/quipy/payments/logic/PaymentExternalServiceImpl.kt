@@ -9,6 +9,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.launch
+import org.checkerframework.checker.units.qual.s
 import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
 import org.springframework.web.server.ResponseStatusException
@@ -98,9 +99,7 @@ class PaymentExternalSystemAdapterImpl(
 
         if (!paymentQueue.enqueue(paymentRequest)) {
             logger.error("[$accountName] Queue overflow! Rejecting payment $paymentId")
-            paymentESService.update(paymentId) {
-                it.logProcessing(false, now(), paymentRequest.transactionId, reason = "Queue overflow (back pressure).")
-            }
+            logProcessing(false, paymentRequest, "Queue overflow (back pressure).")
             throw ResponseStatusException(
                 HttpStatus.TOO_MANY_REQUESTS,
                 timeoutWhenOverflow
@@ -123,9 +122,11 @@ class PaymentExternalSystemAdapterImpl(
 
             when (val result = executeAttempt(paymentRequest, timeout)) {
                 is AttemptResult.Success -> {
+                    logProcessing(true, paymentRequest, result.body.message)
                     return
                 }
                 is AttemptResult.NonRetryableFailure -> {
+                    logProcessing(false, paymentRequest, result.body.message)
                     logger.warn("[$accountName] Non-retriable HTTP error ${result.statusCode} for txId: ${paymentRequest.transactionId}")
                     return
                 }
@@ -141,12 +142,7 @@ class PaymentExternalSystemAdapterImpl(
         }
 
         logger.error("[$accountName] Payment failed after retries for txId: ${paymentRequest.transactionId}, payment: ${paymentRequest.paymentId} — reason: $reason")
-
-        dbScope.launch {
-            paymentESService.update(paymentRequest.paymentId) {
-                it.logProcessing(false, now(), paymentRequest.transactionId, reason = reason)
-            }
-        }
+        logProcessing(false, paymentRequest, reason)
     }
 
     private suspend fun executeAttempt(
@@ -171,12 +167,6 @@ class PaymentExternalSystemAdapterImpl(
                 )
             }
 
-            dbScope.launch {
-                paymentESService.update(paymentRequest.paymentId) {
-                    it.logProcessing(body.result, now(), paymentRequest.transactionId, reason = body.message)
-                }
-            }
-
             when {
                 body.result -> AttemptResult.Success(body)
                 response.status.value in 400..499 && response.status.value != 429 ->
@@ -195,6 +185,14 @@ class PaymentExternalSystemAdapterImpl(
         } catch (e: Exception) {
             logger.error("Payment failed", e)
             AttemptResult.RetryableFailure(null, e)
+        }
+    }
+
+    private fun logProcessing(isSuccess : Boolean, paymentRequest : PaymentRequest, reason : String?) {
+        dbScope.launch {
+            paymentESService.update(paymentRequest.paymentId) {
+                it.logProcessing(isSuccess, now(), paymentRequest.transactionId, reason = reason)
+            }
         }
     }
 
