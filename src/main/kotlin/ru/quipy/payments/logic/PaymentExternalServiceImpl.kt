@@ -9,6 +9,7 @@ import io.ktor.client.plugins.*
 import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
+import io.ktor.http.buildUrl
 import io.ktor.serialization.jackson.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.DelicateCoroutinesApi
@@ -51,7 +52,7 @@ class PaymentExternalSystemAdapterImpl(
     private val serviceName = properties.serviceName
     private val accountName = properties.accountName
     private val requestAverageProcessingTime = properties.averageProcessingTime
-    private val actualRequestAverageProcessingTime = (properties.averageProcessingTime.toMillis().toDouble()*1.0).toLong()
+    private val actualRequestAverageProcessingTime = properties.averageProcessingTime.toMillis()
     private val rateLimitPerSec = properties.rateLimitPerSec.toDouble()
     private val parallelRequests = properties.parallelRequests
     private val parallelLimitPerSec = properties.parallelRequests.toDouble()/(properties.averageProcessingTime.toMillis() / 1000.0)
@@ -90,7 +91,7 @@ class PaymentExternalSystemAdapterImpl(
 
     val retryManager = RetryManager(
         maxRetries = 4,
-        avgProcessingTime = (actualRequestAverageProcessingTime),
+        avgProcessingTime = actualRequestAverageProcessingTime,
         initialRtt = 1.2 * properties.averageProcessingTime.toMillis().toDouble(),
         maxTimeout = 1000.0 // TODO get value from test?
     )
@@ -115,12 +116,9 @@ class PaymentExternalSystemAdapterImpl(
 
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
         val paymentRequest = PaymentRequest(deadline, paymentId, amount, paymentStartedAt)
-        var accepted = false
-
         val canAccept = canAcceptPayment(deadline)
-        if (canAccept.first) {
-            accepted = queue.add(paymentRequest)
-        } else {
+
+        if (!canAccept.first) {
             logger.error("429 from PaymentExternalSystemAdapterImpl")
             val delaySeconds = canAccept.second
             throw ResponseStatusException(
@@ -129,7 +127,7 @@ class PaymentExternalSystemAdapterImpl(
             )
         }
 
-        if (!accepted) {
+        if (!queue.add(paymentRequest)) {
             logger.error("[$accountName] Queue overflow! Rejecting payment $paymentId")
             paymentESService.update(paymentId) {
                 it.logProcessing(false, now(), UUID.randomUUID(), reason = "Queue overflow (back pressure).")
@@ -143,17 +141,14 @@ class PaymentExternalSystemAdapterImpl(
 
     private suspend fun performPaymentWithRetry(paymentRequest: PaymentRequest) {
         try {
-            logger.warn("[$accountName] Submitting payment request for payment ${paymentRequest.paymentId}")
-
             val transactionId = UUID.randomUUID()
+            logger.info("[$accountName] Submitting payment request for payment ${paymentRequest.paymentId}, txId: $transactionId")
 
             dbScope.launch {
                 paymentESService.update(paymentRequest.paymentId) {
                     it.logSubmission(success = true, transactionId, now(), Duration.ofMillis(now() - paymentRequest.paymentStartedAt))
                 }
             }
-
-            logger.info("[$accountName] Submit: ${paymentRequest.paymentId}, txId: $transactionId")
 
             val request = Request.Builder().run {
                 url("http://$paymentProviderHostPort/external/process?serviceName=$serviceName&token=$token&accountName=$accountName&transactionId=$transactionId&paymentId=${paymentRequest.paymentId}&amount=${paymentRequest.amount}")
@@ -162,67 +157,21 @@ class PaymentExternalSystemAdapterImpl(
             val url = request.url.toString()
 
             val retryRequest = paymentRequest.retryRequestInfo
-
-            while (retryManager.shouldRetry(retryRequest.startTime, paymentRequest.deadline, retryRequest.attempt)) {
+            while (retryManager.shouldRetry(retryRequest, paymentRequest.deadline)) {
                 val timeout = computeDynamicTimeout(paymentRequest.deadline)
 
-                try {
-                    val multiplier = retryManager.getMultiplier()
-                    val response: HttpResponse = client.post(url) {
-                        timeout {
-                            requestTimeoutMillis = multiplier * timeout
-                            socketTimeoutMillis = multiplier * timeout
-                            connectTimeoutMillis = multiplier * timeout
-                        }
-                    }
-
-                    val latency = response.responseTime.timestamp - response.requestTime.timestamp
-                    retryManager.recordLatency(latency)
-
-                    val body = runCatching {
-                        response.body<ExternalSysResponse>()
-                    }.getOrElse {
-                        ExternalSysResponse(
-                            transactionId.toString(),
-                            paymentRequest.paymentId.toString(),
-                            result = false,
-                            message = "Bad JSON: ${it.message}"
-                        )
-                    }
-
-                    logger.warn("[$accountName] Payment processed for txId: $transactionId, payment: ${paymentRequest.paymentId}, succeeded: ${body.result}, message: ${body.message}, code: ${response.status.value}")
-
-                    dbScope.launch {
-                        paymentESService.update(paymentRequest.paymentId) {
-                            it.logProcessing(body.result, now(), transactionId, reason = body.message)
-                        }
-                    }
-
-                    if (body.result) { // Success
+                when (val result = executeAttempt(paymentRequest, transactionId, url, timeout)) {
+                    is AttemptResult.Success -> {
                         return
                     }
-
-                    if (response.status.value in 400..499 && response.status.value != 429) { // Non retryable failure
-                        logger.warn("[$accountName] Non-retriable HTTP error ${response.status.value} for txId: $transactionId")
-
-                        val reason = "HTTP ${response.status.value}: ${body.message}"
-                        dbScope.launch {
-                            paymentESService.update(paymentRequest.paymentId) {
-                                it.logProcessing(false, now(), transactionId, reason = reason)
-                            }
-                        }
+                    is AttemptResult.NonRetryableFailure -> {
+                        logger.warn("[$accountName] Non-retriable HTTP error ${result.statusCode} for txId: $transactionId")
                         return
                     }
-
-                } catch (e: SocketTimeoutException) {
-                    logger.error("[$accountName] Timeout for txId: $transactionId, payment: ${paymentRequest.paymentId}", e)
-                } catch (e: HttpRequestTimeoutException) {
-                    logger.error("[$accountName] Timeout for txId: $transactionId, payment: ${paymentRequest.paymentId}", e)
-                    retryManager.recordLatency(2 * timeout)
-                } catch (e: Exception) {
-                    logger.error("[$accountName] Payment failed for txId: $transactionId, payment: ${paymentRequest.paymentId}", e)
+                    is AttemptResult.RetryableFailure -> {
+                        retryRequest.onRetryableFailure()
+                    }
                 }
-                retryRequest.onRetryableFailure()
             }
 
             val reason = when {
@@ -240,6 +189,69 @@ class PaymentExternalSystemAdapterImpl(
         } finally {
             inFlightRequests.decrementAndGet()
         }
+    }
+
+    private suspend fun executeAttempt(
+        paymentRequest: PaymentRequest,
+        transactionId: UUID,
+        url: String,
+        timeout: Long
+    ): AttemptResult {
+        return try {
+            val multiplier = retryManager.getMultiplier()
+            val response: HttpResponse = client.post(url) {
+                timeout {
+                    requestTimeoutMillis = multiplier * timeout
+                    socketTimeoutMillis = multiplier * timeout
+                    connectTimeoutMillis = multiplier * timeout
+                }
+            }
+
+            val latency = response.responseTime.timestamp - response.requestTime.timestamp
+            retryManager.recordLatency(latency)
+
+            val body = runCatching {
+                response.body<ExternalSysResponse>()
+            }.getOrElse {
+                ExternalSysResponse(
+                    transactionId.toString(),
+                    paymentRequest.paymentId.toString(),
+                    result = false,
+                    message = "Bad JSON: ${it.message}"
+                )
+            }
+
+            dbScope.launch {
+                paymentESService.update(paymentRequest.paymentId) {
+                    it.logProcessing(body.result, now(), transactionId, reason = body.message)
+                }
+            }
+
+            when {
+                body.result -> AttemptResult.Success(body)
+                response.status.value in 400..499 && response.status.value != 429 ->
+                    AttemptResult.NonRetryableFailure(body, response.status.value)
+                else -> AttemptResult.RetryableFailure(body)
+            }
+
+        } catch (e: SocketTimeoutException) {
+            logger.error("Timeout", e)
+            retryManager.recordLatency(2 * timeout)
+            AttemptResult.RetryableFailure(null, e)
+        } catch (e: HttpRequestTimeoutException) {
+            logger.error("Timeout", e)
+            retryManager.recordLatency(2 * timeout)
+            AttemptResult.RetryableFailure(null, e)
+        } catch (e: Exception) {
+            logger.error("Payment failed", e)
+            AttemptResult.RetryableFailure(null, e)
+        }
+    }
+
+    sealed class AttemptResult {
+        data class Success(val body: ExternalSysResponse) : AttemptResult()
+        data class NonRetryableFailure(val body: ExternalSysResponse, val statusCode: Int) : AttemptResult()
+        data class RetryableFailure(val body: ExternalSysResponse?, val error: Throwable? = null) : AttemptResult()
     }
 
     private fun computeDynamicTimeout(deadline: Long): Long {
