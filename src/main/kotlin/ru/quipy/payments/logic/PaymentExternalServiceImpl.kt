@@ -88,14 +88,14 @@ class PaymentExternalSystemAdapterImpl(
         val paymentRequest = PaymentRequest(deadline, paymentId, amount, paymentStartedAt)
         val canAccept = canAcceptPayment(deadline)
 
-//        if (!canAccept.first) {
-//            logger.error("429 from PaymentExternalSystemAdapterImpl")
-//            val delaySeconds = canAccept.second
-//            throw ResponseStatusException(
-//                HttpStatus.TOO_MANY_REQUESTS,
-//                delaySeconds.toString(),
-//            )
-//        }
+        if (!canAccept.first) {
+            logger.error("429 from PaymentExternalSystemAdapterImpl")
+            val delaySeconds = canAccept.second
+            throw ResponseStatusException(
+                HttpStatus.TOO_MANY_REQUESTS,
+                delaySeconds.toString(),
+            )
+        }
 
         if (!paymentQueue.enqueue(paymentRequest)) {
             logger.error("[$accountName] Queue overflow! Rejecting payment $paymentId")
