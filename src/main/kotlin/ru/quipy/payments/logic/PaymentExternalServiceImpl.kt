@@ -58,16 +58,16 @@ class PaymentExternalSystemAdapterImpl(
     )
 
     val retryManager = RetryManager(
-        maxRetries = 4,
+        maxRetries = 5,
         avgProcessingTimeMs = actualAverageProcessingTime.toMillis(),
-        initialRttMs = 1.2 * properties.averageProcessingTime.toMillis().toDouble(),
-        maxTimeoutMs = 1000.0 // TODO get value from test?
+        initialRttMs = 1.2 * actualAverageProcessingTime.toMillis().toDouble(), // requestAverageProcessingTime.toMillis().toDouble(),
+        maxTimeoutMs = Duration.ofSeconds(1).toMillis().toDouble() // TODO get value from test?
     )
 
     private val timeoutWhenOverflow = 3L.toString()
     private val outgoingRateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofSeconds(1L))
 
-    private val paymentQueue = PaymentDispatchQueue(
+    private val paymentQueue = PaymentDispatchBlockingQueue(
         outgoingRateLimiter,
         executorScope,
         parallelRequests,
