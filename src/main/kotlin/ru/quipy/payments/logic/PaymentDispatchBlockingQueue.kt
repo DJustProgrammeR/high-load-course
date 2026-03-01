@@ -34,7 +34,7 @@ class PaymentDispatchBlockingQueue(
     }
 
     fun canAcceptPayment(deadline: Long): Pair<Boolean, Long> {
-        val estimatedWait = queue.size.toDouble() / minimalLimitPerSec
+        val estimatedWait = queue.size / minimalLimitPerSec
         val willCompleteAt = now() + estimatedWait * 1000 + requestAverageProcessingTime.toMillis()
 
         val canMeetDeadline = willCompleteAt < deadline
@@ -46,22 +46,23 @@ class PaymentDispatchBlockingQueue(
 
     private fun poll() {
         try {
-            val request = queue.take()
-
-            if (!rateLimiter.tick()) {
-                queue.offer(request)
-                return
-            }
+            val paymentRequest = queue.poll() ?: return
 
             if (inFlight.incrementAndGet() > parallelRequests) {
                 inFlight.decrementAndGet()
-                queue.offer(request)
+                queue.add(paymentRequest)
+                return
+            }
+
+            if (!rateLimiter.tick()) {
+                inFlight.decrementAndGet()
+                queue.add(paymentRequest)
                 return
             }
 
             executorScope.launch {
                 try {
-                    handler(request)
+                    handler(paymentRequest)
                 } finally {
                     inFlight.decrementAndGet()
                 }

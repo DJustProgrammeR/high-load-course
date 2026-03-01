@@ -9,7 +9,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.launch
-import org.checkerframework.checker.units.qual.s
 import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
 import org.springframework.web.server.ResponseStatusException
@@ -68,7 +67,7 @@ class PaymentExternalSystemAdapterImpl(
     private val timeoutWhenOverflow = 3L.toString()
     private val outgoingRateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofSeconds(1L))
 
-    private val paymentQueue = PaymentDispatchBlockingQueue(
+    private val paymentQueue = PaymentDispatchQueue(
         outgoingRateLimiter,
         executorScope,
         parallelRequests,
