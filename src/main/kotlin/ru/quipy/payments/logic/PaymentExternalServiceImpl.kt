@@ -68,7 +68,7 @@ class PaymentExternalSystemAdapterImpl(
     private val timeoutWhenOverflow = 3L.toString()
     private val outgoingRateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofSeconds(1L))
 
-    private val paymentQueue = PaymentDispatchQueue(
+    private val paymentQueue = PaymentDispatchBlockingQueue(
         outgoingRateLimiter,
         executorScope,
         parallelRequests,
@@ -89,7 +89,7 @@ class PaymentExternalSystemAdapterImpl(
         val canAccept = canAcceptPayment(deadline)
 
         if (!canAccept.first) {
-            logger.error("429 from PaymentExternalSystemAdapterImpl")
+            logger.error("[$accountName] Queue overflow! Can't accept payment $paymentId")
             val delaySeconds = canAccept.second
             throw ResponseStatusException(
                 HttpStatus.TOO_MANY_REQUESTS,
@@ -98,7 +98,7 @@ class PaymentExternalSystemAdapterImpl(
         }
 
         if (!paymentQueue.enqueue(paymentRequest)) {
-            logger.error("[$accountName] Queue overflow! Rejecting payment $paymentId")
+            logger.error("[$accountName] Queue overflow! Can't equeue $paymentId")
             logProcessing(false, paymentRequest, "Queue overflow (back pressure).")
             throw ResponseStatusException(
                 HttpStatus.TOO_MANY_REQUESTS,
