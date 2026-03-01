@@ -34,7 +34,7 @@ class PaymentDispatchBlockingQueue(
     }
 
     fun canAcceptPayment(deadline: Long): Pair<Boolean, Long> {
-        val estimatedWait = queue.size / minimalLimitPerSec
+        val estimatedWait = queue.size.toDouble() / minimalLimitPerSec
         val willCompleteAt = now() + estimatedWait * 1000 + requestAverageProcessingTime.toMillis()
 
         val canMeetDeadline = willCompleteAt < deadline
