@@ -23,21 +23,16 @@ class OrderPayer {
     @Autowired
     private lateinit var paymentService: PaymentService
 
-//    private var rateLimit = LeakingBucketQueueRateLimiter(1L, 91.milliseconds, 160)
-
     fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long): Long {
-        val (canAccept, estimatedWaitMs) = paymentService.canAcceptPayment(deadline)
+        val (canAccept, delaySeconds) = paymentService.canAcceptPayment(deadline)
         if (!canAccept) {
-            // logger.error("429 from OrderPayer")
-            val delaySeconds = (estimatedWaitMs - System.currentTimeMillis()) / 1000
             throw ResponseStatusException(
                 HttpStatus.TOO_MANY_REQUESTS,
                 delaySeconds.toString()
             )
         }
 
-
-        val createdAt = System.currentTimeMillis()
+        val createdAt = now()
         val createdEvent = paymentESService.create {
             it.create(
                 paymentId,
