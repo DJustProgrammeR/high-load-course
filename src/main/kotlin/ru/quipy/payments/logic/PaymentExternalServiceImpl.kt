@@ -79,7 +79,7 @@ class PaymentExternalSystemAdapterImpl(
 
     init {
         paymentQueue.start(
-            CoroutineScope(Executors.newSingleThreadExecutor().asCoroutineDispatcher())
+            CoroutineScope(Executors.newFixedThreadPool(20).asCoroutineDispatcher())
         )
     }
 
