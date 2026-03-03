@@ -16,7 +16,7 @@ class PaymentDispatchBlockingQueue(
     private val minimalLimitPerSec: Double,
     private val handler: suspend (PaymentRequest) -> Unit
 ) {
-    private val maxQueueSize = 5000
+    private val maxQueueSize = 20000
     private val queue = PriorityBlockingQueue<PaymentRequest>(maxQueueSize, compareBy { it.deadline })
     private val inFlight = AtomicInteger(0)
 

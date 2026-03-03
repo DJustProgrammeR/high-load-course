@@ -16,7 +16,7 @@ class PaymentDispatchQueue(
     private val minimalLimitPerSec: Double,
     private val handler: suspend (PaymentRequest) -> Unit
 ) {
-    private val maxQueueSize = 5000
+    private val maxQueueSize = 15000
     private val queue = ConcurrentSkipListSet<PaymentRequest>(compareBy { it.deadline })
     private val inFlight = AtomicInteger(0)
 
@@ -26,6 +26,11 @@ class PaymentDispatchQueue(
     fun size(): Int = queue.size
 
     fun start(scope: CoroutineScope) {
+        scope.launch {
+            while (true) {
+                poll()
+            }
+        }
         scope.launch {
             while (true) {
                 poll()

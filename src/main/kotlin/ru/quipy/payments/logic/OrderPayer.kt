@@ -28,7 +28,7 @@ class OrderPayer {
         if (!canAccept) {
             throw ResponseStatusException(
                 HttpStatus.TOO_MANY_REQUESTS,
-                delaySeconds.toString()
+                3L.toString()
             )
         }
 
