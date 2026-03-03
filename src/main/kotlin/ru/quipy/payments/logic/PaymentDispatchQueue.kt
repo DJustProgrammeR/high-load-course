@@ -35,7 +35,7 @@ class PaymentDispatchQueue(
 
     fun canAcceptPayment(deadline: Long): Pair<Boolean, Long> {
         val estimatedWait = queue.size / minimalLimitPerSec
-        val willCompleteAt = now() + estimatedWait * 1000
+        val willCompleteAt = now() + estimatedWait * 1000 + requestAverageProcessingTime.toMillis()
 
         val canMeetDeadline = willCompleteAt < deadline
         val queueOk = queue.size < maxQueueSize

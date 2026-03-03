@@ -58,7 +58,7 @@ class PaymentExternalSystemAdapterImpl(
     )
 
     val retryManager = RetryManager(
-        maxRetries = 5,
+        maxRetries = 2,
         avgProcessingTimeMs = requestAverageProcessingTime.toMillis(),
         initialRttMs = 1.2 *  actualAverageProcessingTime.toMillis().toDouble(), // requestAverageProcessingTime.toMillis().toDouble(),
         maxTimeoutMs = Duration.ofSeconds(1).toMillis().toDouble() // TODO get value from test?
