@@ -7,6 +7,7 @@ import io.ktor.client.plugins.*
 import io.ktor.client.statement.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.DelicateCoroutinesApi
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.launch
 import org.slf4j.LoggerFactory
@@ -49,7 +50,7 @@ class PaymentExternalSystemAdapterImpl(
 
     @OptIn(DelicateCoroutinesApi::class)
     private val executorScope = CoroutineScope(
-        Executors.newVirtualThreadPerTaskExecutor().asCoroutineDispatcher()
+Dispatchers.IO
     )
 
     @OptIn(DelicateCoroutinesApi::class)
@@ -67,7 +68,7 @@ class PaymentExternalSystemAdapterImpl(
     private val timeoutWhenOverflow = 3L.toString()
     private val outgoingRateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofSeconds(1L))
 
-    private val paymentQueue = PaymentDispatchQueue(
+    private val paymentQueue = PaymentDispatchBlockingQueue(
         outgoingRateLimiter,
         executorScope,
         parallelRequests,
@@ -117,7 +118,7 @@ class PaymentExternalSystemAdapterImpl(
 
         val retryRequest = paymentRequest.retryRequestInfo
         while (retryManager.shouldRetry(retryRequest, paymentRequest.deadline)) {
-            val timeout = retryManager.staticTimeout() //.computeDynamicTimeout(paymentRequest.deadline)
+            val timeout = retryManager.computeDynamicTimeout(paymentRequest.deadline)
 
             when (val result = executeAttempt(paymentRequest, timeout)) {
                 is AttemptResult.Success -> {
@@ -172,7 +173,6 @@ class PaymentExternalSystemAdapterImpl(
                     AttemptResult.NonRetryableFailure(body, response.status.value)
                 else -> AttemptResult.RetryableFailure(body)
             }
-
         } catch (e: SocketTimeoutException) {
             logger.error("Timeout", e)
             retryManager.recordLatency(2 * timeout)
