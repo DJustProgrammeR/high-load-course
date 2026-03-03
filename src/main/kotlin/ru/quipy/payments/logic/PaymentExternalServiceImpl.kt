@@ -38,7 +38,7 @@ class PaymentExternalSystemAdapterImpl(
 
     private val accountName = properties.accountName
     private val requestAverageProcessingTime = properties.averageProcessingTime
-    private val actualAverageProcessingTime = Duration.ofMillis(60) // properties.averageProcessingTime
+    private val actualAverageProcessingTime = Duration.ofMillis(60)
     private val rateLimitPerSec = properties.rateLimitPerSec.toDouble()
     private val parallelRequests = properties.parallelRequests
     private val parallelLimitPerSec = properties.parallelRequests.toDouble()/requestAverageProcessingTime.toMillis()
@@ -79,7 +79,7 @@ class PaymentExternalSystemAdapterImpl(
 
     init {
         paymentQueue.start(
-            CoroutineScope(Executors.newFixedThreadPool(3).asCoroutineDispatcher())
+            CoroutineScope(Executors.newFixedThreadPool(5).asCoroutineDispatcher())
         )
     }
 
