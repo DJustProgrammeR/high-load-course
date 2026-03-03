@@ -9,12 +9,18 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.launch
 import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
 import org.springframework.web.server.ResponseStatusException
 import ru.quipy.common.utils.ratelimiter.SlidingWindowRateLimiter
+import ru.quipy.core.EventSourcingService
+import ru.quipy.payments.api.PaymentAggregate
 import ru.quipy.payments.logic.backpressure.queue.PaymentDispatchBlockingQueue
 import ru.quipy.payments.logic.eventsource.EventSourcingServiceWrapper
+import ru.quipy.payments.logic.eventsource.PaymentAggregateState
+import ru.quipy.payments.logic.eventsource.logProcessing
+import ru.quipy.payments.logic.eventsource.logSubmission
 import java.net.SocketTimeoutException
 import java.time.Duration
 import java.util.*
@@ -38,20 +44,22 @@ class PaymentExternalSystemAdapterImpl(
 
     private val accountName = properties.accountName
     private val requestAverageProcessingTime = properties.averageProcessingTime
+    private val actualAverageProcessingTime = Duration.ofMillis(60)
     private val rateLimitPerSec = properties.rateLimitPerSec.toDouble()
     private val parallelRequests = properties.parallelRequests
     private val parallelLimitPerSec = properties.parallelRequests.toDouble()/requestAverageProcessingTime.toMillis()
 
     private val minimalLimitPerSec = min(rateLimitPerSec, parallelLimitPerSec)
 
-    private val client = PaymentHttpClient(requestAverageProcessingTime, properties, paymentProviderHostPort, token)
+    private val client = PaymentHttpClient(actualAverageProcessingTime, properties, paymentProviderHostPort, token)
 
     @OptIn(DelicateCoroutinesApi::class)
     private val executorScope = CoroutineScope(Dispatchers.IO)
 
     val retryManager = RetryManager(
-        maxTries = 3,
-        initialRttMs = 2 * requestAverageProcessingTime.toMillis().toDouble(),
+        maxTries = 1,
+        avgProcessingTimeMs = actualAverageProcessingTime.toMillis(),
+        initialRttMs = 1.2 *  actualAverageProcessingTime.toMillis().toDouble(), // requestAverageProcessingTime.toMillis().toDouble(),
         maxTimeoutMs = Duration.ofSeconds(1).toMillis().toDouble() // TODO get value from test?
     )
 
@@ -65,8 +73,7 @@ class PaymentExternalSystemAdapterImpl(
         requestAverageProcessingTime,
         minimalLimitPerSec
     ) { request ->
-        val finished = performPaymentWithRetry(request)
-        if (!finished) { enqueue(request) }
+        performPaymentWithRetry(request)
     }
 
     init {
@@ -98,41 +105,38 @@ class PaymentExternalSystemAdapterImpl(
         }
     }
 
-    private suspend fun performPaymentWithRetry(paymentRequest: PaymentRequest): Boolean {
+    private suspend fun performPaymentWithRetry(paymentRequest: PaymentRequest) {
         logger.info("[$accountName] Submitting payment request for payment ${paymentRequest.paymentId}, txId: ${paymentRequest.transactionId}")
 
         paymentESService.updateLogSubmission(paymentRequest)
 
         val retryRequest = paymentRequest.retryRequestInfo
-        if (retryManager.shouldRetry(retryRequest, paymentRequest.deadline)) {
+        while (retryManager.shouldRetry(retryRequest, paymentRequest.deadline)) {
             val timeout = retryManager.computeDynamicTimeout(paymentRequest.deadline)
 
             when (val result = executeAttempt(paymentRequest, timeout)) {
                 is AttemptResult.Success -> {
                     paymentESService.updateLogProcessing(true, paymentRequest, result.body.message)
-                    return true
+                    return
                 }
                 is AttemptResult.NonRetryableFailure -> {
                     paymentESService.updateLogProcessing(false, paymentRequest, result.body.message)
                     logger.warn("[$accountName] Non-retriable HTTP error ${result.statusCode} for txId: ${paymentRequest.transactionId}")
-                    return true
+                    return
                 }
                 is AttemptResult.RetryableFailure -> {
                     retryRequest.onRetryableFailure()
                 }
             }
-        } else {
-            val reason = when {
-                now() >= paymentRequest.deadline -> "Deadline exceeded after ${retryRequest.attempt} retries"
-                else -> "All retry attempts (${retryRequest.attempt}) exhausted"
-            }
-
-            logger.error("[$accountName] Payment failed after retries for txId: ${paymentRequest.transactionId}, payment: ${paymentRequest.paymentId} — reason: $reason")
-            paymentESService.updateLogProcessing(false, paymentRequest, reason)
-            return true
         }
 
-        return false
+        val reason = when {
+            now() >= paymentRequest.deadline -> "Deadline exceeded after ${retryRequest.attempt} retries"
+            else -> "All retry attempts (${retryRequest.attempt}) exhausted"
+        }
+
+        logger.error("[$accountName] Payment failed after retries for txId: ${paymentRequest.transactionId}, payment: ${paymentRequest.paymentId} — reason: $reason")
+        paymentESService.updateLogProcessing(false, paymentRequest, reason)
     }
 
     private suspend fun executeAttempt(
