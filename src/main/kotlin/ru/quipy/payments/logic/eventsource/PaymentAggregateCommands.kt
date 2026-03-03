@@ -1,8 +1,9 @@
-package ru.quipy.payments.logic
+package ru.quipy.payments.logic.eventsource
 
 import ru.quipy.payments.api.PaymentCreatedEvent
 import ru.quipy.payments.api.PaymentProcessedEvent
 import ru.quipy.payments.api.PaymentSubmittedEvent
+import ru.quipy.payments.logic.eventsource.PaymentAggregateState
 import java.time.Duration
 import java.util.*
 

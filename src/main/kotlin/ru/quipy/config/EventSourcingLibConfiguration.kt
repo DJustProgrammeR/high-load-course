@@ -10,7 +10,7 @@ import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import ru.quipy.core.EventSourcingServiceFactory
 import ru.quipy.payments.api.PaymentAggregate
-import ru.quipy.payments.logic.PaymentAggregateState
+import ru.quipy.payments.logic.eventsource.PaymentAggregateState
 import ru.quipy.streams.AggregateEventStreamManager
 import java.util.*
 

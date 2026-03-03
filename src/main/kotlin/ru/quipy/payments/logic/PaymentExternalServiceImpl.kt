@@ -16,6 +16,11 @@ import org.springframework.web.server.ResponseStatusException
 import ru.quipy.common.utils.ratelimiter.SlidingWindowRateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
+import ru.quipy.payments.logic.backpressure.queue.PaymentDispatchBlockingQueue
+import ru.quipy.payments.logic.eventsource.EventSourcingServiceWrapper
+import ru.quipy.payments.logic.eventsource.PaymentAggregateState
+import ru.quipy.payments.logic.eventsource.logProcessing
+import ru.quipy.payments.logic.eventsource.logSubmission
 import java.net.SocketTimeoutException
 import java.time.Duration
 import java.util.*
@@ -27,7 +32,7 @@ import kotlin.math.min
 @Suppress("Since15")
 class PaymentExternalSystemAdapterImpl(
     private val properties: PaymentAccountProperties,
-    private val paymentESService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>,
+    private val paymentESService: EventSourcingServiceWrapper,
     paymentProviderHostPort: String,
     token: String,
 ) : PaymentExternalSystemAdapter {
@@ -49,14 +54,7 @@ class PaymentExternalSystemAdapterImpl(
     private val client = PaymentHttpClient(actualAverageProcessingTime, properties, paymentProviderHostPort, token)
 
     @OptIn(DelicateCoroutinesApi::class)
-    private val executorScope = CoroutineScope(
-Dispatchers.IO
-    )
-
-    @OptIn(DelicateCoroutinesApi::class)
-    private val dbScope = CoroutineScope(
-        Executors.newSingleThreadExecutor().asCoroutineDispatcher()
-    )
+    private val executorScope = CoroutineScope(Dispatchers.IO)
 
     val retryManager = RetryManager(
         maxTries = 1,
@@ -99,7 +97,7 @@ Dispatchers.IO
 
         if (!paymentQueue.enqueue(paymentRequest)) {
             logger.error("[$accountName] Queue overflow! Can't equeue $paymentId")
-            logProcessing(false, paymentRequest, "Queue overflow (back pressure).")
+            paymentESService.updateLogProcessing(false, paymentRequest, "Queue overflow (back pressure).")
             throw ResponseStatusException(
                 HttpStatus.TOO_MANY_REQUESTS,
                 timeoutWhenOverflow
@@ -110,11 +108,7 @@ Dispatchers.IO
     private suspend fun performPaymentWithRetry(paymentRequest: PaymentRequest) {
         logger.info("[$accountName] Submitting payment request for payment ${paymentRequest.paymentId}, txId: ${paymentRequest.transactionId}")
 
-        dbScope.launch {
-            paymentESService.update(paymentRequest.paymentId) {
-                it.logSubmission(success = true, paymentRequest.transactionId, now(), Duration.ofMillis(now() - paymentRequest.paymentStartedAt))
-            }
-        }
+        paymentESService.updateLogSubmission(paymentRequest)
 
         val retryRequest = paymentRequest.retryRequestInfo
         while (retryManager.shouldRetry(retryRequest, paymentRequest.deadline)) {
@@ -122,11 +116,11 @@ Dispatchers.IO
 
             when (val result = executeAttempt(paymentRequest, timeout)) {
                 is AttemptResult.Success -> {
-                    logProcessing(true, paymentRequest, result.body.message)
+                    paymentESService.updateLogProcessing(true, paymentRequest, result.body.message)
                     return
                 }
                 is AttemptResult.NonRetryableFailure -> {
-                    logProcessing(false, paymentRequest, result.body.message)
+                    paymentESService.updateLogProcessing(false, paymentRequest, result.body.message)
                     logger.warn("[$accountName] Non-retriable HTTP error ${result.statusCode} for txId: ${paymentRequest.transactionId}")
                     return
                 }
@@ -142,7 +136,7 @@ Dispatchers.IO
         }
 
         logger.error("[$accountName] Payment failed after retries for txId: ${paymentRequest.transactionId}, payment: ${paymentRequest.paymentId} — reason: $reason")
-        logProcessing(false, paymentRequest, reason)
+        paymentESService.updateLogProcessing(false, paymentRequest, reason)
     }
 
     private suspend fun executeAttempt(
@@ -184,14 +178,6 @@ Dispatchers.IO
         } catch (e: Exception) {
             logger.error("Payment failed", e)
             AttemptResult.RetryableFailure(null, e)
-        }
-    }
-
-    private fun logProcessing(isSuccess : Boolean, paymentRequest : PaymentRequest, reason : String?) {
-        dbScope.launch {
-            paymentESService.update(paymentRequest.paymentId) {
-                it.logProcessing(isSuccess, now(), paymentRequest.transactionId, reason = reason)
-            }
         }
     }
 

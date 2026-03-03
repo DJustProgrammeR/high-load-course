@@ -1,14 +1,16 @@
-package ru.quipy.payments.logic
+package ru.quipy.payments.logic.backpressure.queue
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import ru.quipy.common.utils.ratelimiter.SlidingWindowRateLimiter
+import ru.quipy.payments.logic.PaymentRequest
+import ru.quipy.payments.logic.now
 import java.time.Duration
-import java.util.concurrent.PriorityBlockingQueue
+import java.util.concurrent.ConcurrentSkipListSet
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.ceil
 
-class PaymentDispatchBlockingQueue(
+class PaymentDispatchQueue(
     private val rateLimiter: SlidingWindowRateLimiter,
     private val executorScope: CoroutineScope,
     private val parallelRequests: Int,
@@ -16,8 +18,8 @@ class PaymentDispatchBlockingQueue(
     private val minimalLimitPerSec: Double,
     private val handler: suspend (PaymentRequest) -> Unit
 ) {
-    private val maxQueueSize = 20000
-    private val queue = PriorityBlockingQueue<PaymentRequest>(maxQueueSize, compareBy { it.deadline })
+    private val maxQueueSize = 15000
+    private val queue = ConcurrentSkipListSet<PaymentRequest>(compareBy { it.deadline })
     private val inFlight = AtomicInteger(0)
 
     fun enqueue(request: PaymentRequest): Boolean =
@@ -26,6 +28,11 @@ class PaymentDispatchBlockingQueue(
     fun size(): Int = queue.size
 
     fun start(scope: CoroutineScope) {
+        scope.launch {
+            while (true) {
+                poll()
+            }
+        }
         scope.launch {
             while (true) {
                 poll()
@@ -43,33 +50,30 @@ class PaymentDispatchBlockingQueue(
         return Pair(canMeetDeadline && queueOk, ceil( estimatedWait).toLong())
     }
 
-
     private fun poll() {
-        try {
-            val paymentRequest = queue.poll() ?: return
+        if (queue.isEmpty()) return
 
-            if (inFlight.incrementAndGet() > parallelRequests) {
+        if (inFlight.incrementAndGet() > parallelRequests) {
+            inFlight.decrementAndGet()
+            return
+        }
+
+        if (!rateLimiter.tick()) {
+            inFlight.decrementAndGet()
+            return
+        }
+
+        val request = queue.pollFirst() ?: run {
+            inFlight.decrementAndGet()
+            return
+        }
+
+        executorScope.launch {
+            try {
+                handler(request)
+            } finally {
                 inFlight.decrementAndGet()
-                queue.add(paymentRequest)
-                return
             }
-
-            if (!rateLimiter.tick()) {
-                inFlight.decrementAndGet()
-                queue.add(paymentRequest)
-                return
-            }
-
-            executorScope.launch {
-                try {
-                    handler(paymentRequest)
-                } finally {
-                    inFlight.decrementAndGet()
-                }
-            }
-
-        } catch (_: InterruptedException) {
-            Thread.currentThread().interrupt()
         }
     }
 }
