@@ -4,7 +4,7 @@ import kotlin.math.abs
 
 
 class RetryManager(
-    private val maxRetries: Int,
+    private val maxTries: Int,
     private val avgProcessingTimeMs: Long = 1000L,
     private val initialRttMs: Double,
     private val maxTimeoutMs: Double
@@ -21,7 +21,7 @@ class RetryManager(
     fun shouldRetry(retryRequestInfo: RetryRequestInfo, deadline: Long): Boolean {
         retryRequestInfo.startTime = now()
         if (retryRequestInfo.startTime >= deadline - avgProcessingTimeMs * 1.02) return false
-        if (retryRequestInfo.attempt >= maxRetries) return false
+        if (retryRequestInfo.attempt >= maxTries) return false
         return true
     }
 

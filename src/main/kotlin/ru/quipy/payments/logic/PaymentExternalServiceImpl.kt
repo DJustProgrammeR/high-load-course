@@ -58,7 +58,7 @@ class PaymentExternalSystemAdapterImpl(
     )
 
     val retryManager = RetryManager(
-        maxRetries = 2,
+        maxTries = 1,
         avgProcessingTimeMs = requestAverageProcessingTime.toMillis(),
         initialRttMs = 1.2 *  actualAverageProcessingTime.toMillis().toDouble(), // requestAverageProcessingTime.toMillis().toDouble(),
         maxTimeoutMs = Duration.ofSeconds(1).toMillis().toDouble() // TODO get value from test?
@@ -85,8 +85,8 @@ class PaymentExternalSystemAdapterImpl(
 
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
         val paymentRequest = PaymentRequest(deadline, paymentId, amount, paymentStartedAt)
-        val canAccept = canAcceptPayment(deadline)
-
+//        val canAccept = canAcceptPayment(deadline)
+//
 //        if (!canAccept.first) {
 //            logger.error("[$accountName] Queue overflow! Can't accept payment $paymentId")
 //            val delaySeconds = canAccept.second
