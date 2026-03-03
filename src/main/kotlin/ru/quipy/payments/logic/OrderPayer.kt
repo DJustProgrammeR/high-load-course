@@ -24,13 +24,13 @@ class OrderPayer {
     private lateinit var paymentService: PaymentService
 
     fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long): Long {
-//        val (canAccept, delaySeconds) = paymentService.canAcceptPayment(deadline)
-//        if (!canAccept) {
-//            throw ResponseStatusException(
-//                HttpStatus.TOO_MANY_REQUESTS,
-//                delaySeconds.toString()
-//            )
-//        }
+        val (canAccept, delaySeconds) = paymentService.canAcceptPayment(deadline)
+        if (!canAccept) {
+            throw ResponseStatusException(
+                HttpStatus.TOO_MANY_REQUESTS,
+                3L.toString()
+            )
+        }
 
         val createdAt = now()
         val createdEvent = paymentESService.create {
