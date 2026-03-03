@@ -41,7 +41,7 @@ class PaymentExternalSystemAdapterImpl(
     private val actualAverageProcessingTime = Duration.ofMillis(50) // properties.averageProcessingTime
     private val rateLimitPerSec = properties.rateLimitPerSec.toDouble()
     private val parallelRequests = properties.parallelRequests
-    private val parallelLimitPerSec = properties.parallelRequests.toDouble()/actualAverageProcessingTime.toMillis()
+    private val parallelLimitPerSec = properties.parallelRequests.toDouble()/requestAverageProcessingTime.toMillis()
 
     private val minimalLimitPerSec = min(rateLimitPerSec, parallelLimitPerSec)
 
@@ -54,7 +54,7 @@ class PaymentExternalSystemAdapterImpl(
 
     @OptIn(DelicateCoroutinesApi::class)
     private val dbScope = CoroutineScope(
-        Executors.newVirtualThreadPerTaskExecutor().asCoroutineDispatcher()
+        Executors.newSingleThreadExecutor().asCoroutineDispatcher()
     )
 
     val retryManager = RetryManager(
@@ -79,7 +79,7 @@ class PaymentExternalSystemAdapterImpl(
 
     init {
         paymentQueue.start(
-            CoroutineScope(Executors.newFixedThreadPool(20).asCoroutineDispatcher())
+            CoroutineScope(Executors.newFixedThreadPool(2).asCoroutineDispatcher())
         )
     }
 
