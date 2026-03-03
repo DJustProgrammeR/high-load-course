@@ -31,6 +31,11 @@ class PaymentDispatchBlockingQueue(
                 poll()
             }
         }
+        scope.launch {
+            while (true) {
+                poll()
+            }
+        }
     }
 
     fun canAcceptPayment(deadline: Long): Pair<Boolean, Long> {
