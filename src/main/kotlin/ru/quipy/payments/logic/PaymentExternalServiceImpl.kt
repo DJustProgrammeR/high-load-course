@@ -38,7 +38,7 @@ class PaymentExternalSystemAdapterImpl(
 
     private val accountName = properties.accountName
     private val requestAverageProcessingTime = properties.averageProcessingTime
-    private val actualAverageProcessingTime = Duration.ofMillis(50) // properties.averageProcessingTime
+    private val actualAverageProcessingTime = Duration.ofMillis(60) // properties.averageProcessingTime
     private val rateLimitPerSec = properties.rateLimitPerSec.toDouble()
     private val parallelRequests = properties.parallelRequests
     private val parallelLimitPerSec = properties.parallelRequests.toDouble()/requestAverageProcessingTime.toMillis()
@@ -59,7 +59,7 @@ class PaymentExternalSystemAdapterImpl(
 
     val retryManager = RetryManager(
         maxTries = 1,
-        avgProcessingTimeMs = requestAverageProcessingTime.toMillis(),
+        avgProcessingTimeMs = actualAverageProcessingTime.toMillis(),
         initialRttMs = 1.2 *  actualAverageProcessingTime.toMillis().toDouble(), // requestAverageProcessingTime.toMillis().toDouble(),
         maxTimeoutMs = Duration.ofSeconds(1).toMillis().toDouble() // TODO get value from test?
     )
@@ -117,7 +117,7 @@ class PaymentExternalSystemAdapterImpl(
 
         val retryRequest = paymentRequest.retryRequestInfo
         while (retryManager.shouldRetry(retryRequest, paymentRequest.deadline)) {
-            val timeout = retryManager.computeDynamicTimeout(paymentRequest.deadline)
+            val timeout = retryManager.staticTimeout() //.computeDynamicTimeout(paymentRequest.deadline)
 
             when (val result = executeAttempt(paymentRequest, timeout)) {
                 is AttemptResult.Success -> {

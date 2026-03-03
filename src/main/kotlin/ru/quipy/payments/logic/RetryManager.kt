@@ -15,7 +15,7 @@ class RetryManager(
     @Volatile private var srtt = initialRttMs
     @Volatile private var rttvar = initialRttMs / 2
 
-    fun getMultiplier(): Long = 1
+    fun getMultiplier(): Long = 2
     fun getScalingMultiplier(attempt: Int): Long = multiplierList.getOrElse(attempt) { multiplierList.last() }
 
     fun shouldRetry(retryRequestInfo: RetryRequestInfo, deadline: Long): Boolean {
@@ -23,6 +23,10 @@ class RetryManager(
         if (retryRequestInfo.startTime >= deadline - avgProcessingTimeMs * 1.02) return false
         if (retryRequestInfo.attempt >= maxTries) return false
         return true
+    }
+
+    fun staticTimeout(): Long {
+        return avgProcessingTimeMs
     }
 
     fun computeDynamicTimeout(deadline: Long): Long {
