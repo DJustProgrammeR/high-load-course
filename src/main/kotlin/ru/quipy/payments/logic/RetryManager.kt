@@ -19,6 +19,8 @@ class RetryManager(
     fun getScalingMultiplier(attempt: Int): Long = multiplierList.getOrElse(attempt) { multiplierList.last() }
 
     fun shouldRetry(retryRequestInfo: RetryRequestInfo, deadline: Long): Boolean {
+        if (retryRequestInfo.attempt == 0) return true
+
         retryRequestInfo.startTime = now()
         if (retryRequestInfo.startTime >= deadline - avgProcessingTimeMs * 1.02) return false
         if (retryRequestInfo.attempt >= maxTries) return false

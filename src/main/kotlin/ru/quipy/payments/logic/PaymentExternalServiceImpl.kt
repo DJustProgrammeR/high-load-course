@@ -39,7 +39,7 @@ class PaymentExternalSystemAdapterImpl(
 
     private val accountName = properties.accountName
     private val requestAverageProcessingTime = properties.averageProcessingTime
-    private val actualAverageProcessingTime = Duration.ofMillis(1650)
+    private val actualAverageProcessingTime = Duration.ofMillis(1000)
     private val rateLimitPerSec = properties.rateLimitPerSec.toDouble()
     private val parallelRequests = properties.parallelRequests
     private val parallelLimitPerSec = properties.parallelRequests.toDouble()/requestAverageProcessingTime.toMillis()
@@ -62,7 +62,7 @@ Dispatchers.IO
         maxTries = 1,
         avgProcessingTimeMs = actualAverageProcessingTime.toMillis(),
         initialRttMs = 1.2 *  actualAverageProcessingTime.toMillis().toDouble(), // requestAverageProcessingTime.toMillis().toDouble(),
-        maxTimeoutMs = Duration.ofSeconds(1).toMillis().toDouble() // TODO get value from test?
+        maxTimeoutMs = Duration.ofMillis(1500).toMillis().toDouble() // TODO get value from test?
     )
 
     private val timeoutWhenOverflow = 3L.toString()
