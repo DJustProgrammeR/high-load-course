@@ -62,10 +62,10 @@ Dispatchers.IO
 
     private val outgoingRateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofSeconds(1L))
 
-    private val client = PaymentHttpClient(actualAverageProcessingTimeMs, properties, paymentProviderHostPort, token, 100)
+    private val client = PaymentHedgedHttpClient(actualAverageProcessingTimeMs, properties, paymentProviderHostPort, token, 100)
 
     val retryManager = RetryManager(
-        maxTries = 3,
+        maxTries = 2,
         avgProcessingTimeMs = actualAverageProcessingTimeMs,
         initialRttMs = 1.2 * actualAverageProcessingTimeMs.toDouble(),
         maxTimeoutMs = Duration.ofMillis(1500).toMillis().toDouble()
@@ -113,7 +113,7 @@ Dispatchers.IO
 
         val retryRequest = paymentRequest.retryRequestInfo
         while (retryManager.shouldRetry(retryRequest, paymentRequest.deadline)) {
-            val timeout = actualAverageProcessingTimeMs // retryManager.computeDynamicTimeout(paymentRequest.deadline)
+            val timeout = actualAverageProcessingTimeMs
             val multiplier = retryManager.getMultiplier()
 
             when (val result = executeAttempt(paymentRequest, ceil(timeout * multiplier).toLong())) {
@@ -146,7 +146,7 @@ Dispatchers.IO
         timeout: Long
     ): AttemptResult {
         return try {
-            val response: HttpResponse = client.post(paymentRequest, timeout)
+            val response: HttpResponse = client.post(paymentRequest)
 
             val latency = response.responseTime.timestamp - response.requestTime.timestamp
             retryManager.recordLatency(latency)

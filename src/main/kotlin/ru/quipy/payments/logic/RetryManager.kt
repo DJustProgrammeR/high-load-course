@@ -16,6 +16,7 @@ class RetryManager(
     @Volatile private var rttvar = initialRttMs / 2
 
     fun getMultiplier(): Double = 1.2
+
     fun getScalingMultiplier(attempt: Int): Long = multiplierList.getOrElse(attempt) { multiplierList.last() }
 
     fun shouldRetry(retryRequestInfo: RetryRequestInfo, deadline: Long): Boolean {
