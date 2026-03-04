@@ -8,6 +8,7 @@ import io.ktor.client.statement.*
 import kotlinx.coroutines.*
 import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
+import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.web.server.ResponseStatusException
 import ru.quipy.common.utils.ratelimiter.SlidingWindowRateLimiter
 import ru.quipy.core.EventSourcingService
@@ -53,13 +54,6 @@ Dispatchers.IO
         Executors.newSingleThreadExecutor().asCoroutineDispatcher()
     )
 
-    @OptIn(DelicateCoroutinesApi::class)
-    private val metricsScope = CoroutineScope(
-        Executors.newSingleThreadExecutor().asCoroutineDispatcher()
-    )
-
-    private var metricsJob: Job? = null
-
     private val outgoingRateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofSeconds(1L))
 
     private val client = PaymentHedgedHttpClient(actualAverageProcessingTimeMs, properties, paymentProviderHostPort, token, 100)
@@ -85,8 +79,13 @@ Dispatchers.IO
         paymentQueue.start(
             CoroutineScope(Executors.newFixedThreadPool(5).asCoroutineDispatcher())
         )
+    }
 
-        startMetricsUpdater()
+    @Scheduled(fixedDelay = 1000)
+    fun updateMetrics() {
+        actualAverageProcessingTimeMs = client.getAverageProcessingTimeMs()
+        paymentQueue.setAverageProcessingTime(actualAverageProcessingTimeMs)
+        retryManager.setAverageProcessingTime(actualAverageProcessingTimeMs)
     }
 
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
@@ -204,23 +203,6 @@ Dispatchers.IO
 
     override fun canAcceptPayment(deadline: Long): Pair<Boolean, Long> {
         return paymentQueue.canAcceptPayment(deadline)
-    }
-
-    private fun startMetricsUpdater() {
-        metricsJob = metricsScope.launch {
-            while (isActive) {
-                try {
-                    actualAverageProcessingTimeMs = client.getAverageProcessingTimeMs()
-                    paymentQueue.setAverageProcessingTime(actualAverageProcessingTimeMs)
-                    retryManager.setAverageProcessingTime(actualAverageProcessingTimeMs)
-
-                } catch (e: Exception) {
-                    logger.error("Metrics updater failed", e)
-                }
-
-                delay(1000)
-            }
-        }
     }
 }
 
