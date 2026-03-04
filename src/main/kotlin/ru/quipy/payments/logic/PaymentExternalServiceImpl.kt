@@ -5,13 +5,10 @@ import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import io.ktor.client.call.*
 import io.ktor.client.plugins.*
 import io.ktor.client.statement.*
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.DelicateCoroutinesApi
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.asCoroutineDispatcher
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.*
 import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
+import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.web.server.ResponseStatusException
 import ru.quipy.common.utils.ratelimiter.SlidingWindowRateLimiter
 import ru.quipy.core.EventSourcingService
@@ -43,10 +40,8 @@ class PaymentExternalSystemAdapterImpl(
     private val rateLimitPerSec = properties.rateLimitPerSec.toDouble()
     private val parallelRequests = properties.parallelRequests
     private val parallelLimitPerSec = properties.parallelRequests.toDouble()/requestAverageProcessingTime.toMillis()
-
+    private val timeoutWhenOverflow = 3L.toString()
     private val minimalLimitPerSec = min(rateLimitPerSec, parallelLimitPerSec)
-
-    private val client = PaymentHttpClient(actualAverageProcessingTime, properties, paymentProviderHostPort, token)
 
     @OptIn(DelicateCoroutinesApi::class)
     private val executorScope = CoroutineScope(
@@ -58,15 +53,16 @@ Dispatchers.IO
         Executors.newSingleThreadExecutor().asCoroutineDispatcher()
     )
 
+    private val outgoingRateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofSeconds(1L))
+
+    private val client = PaymentHttpClient(actualAverageProcessingTime, properties, paymentProviderHostPort, token, 100)
+
     val retryManager = RetryManager(
         maxTries = 1,
         avgProcessingTimeMs = actualAverageProcessingTime.toMillis(),
-        initialRttMs = 1.2 *  actualAverageProcessingTime.toMillis().toDouble(), // requestAverageProcessingTime.toMillis().toDouble(),
-        maxTimeoutMs = Duration.ofMillis(1500).toMillis().toDouble() // TODO get value from test?
+        initialRttMs = 1.2 * actualAverageProcessingTime.toMillis().toDouble(),
+        maxTimeoutMs = Duration.ofMillis(1500).toMillis().toDouble()
     )
-
-    private val timeoutWhenOverflow = 3L.toString()
-    private val outgoingRateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofSeconds(1L))
 
     private val paymentQueue = PaymentDispatchBlockingQueue(
         outgoingRateLimiter,
@@ -84,18 +80,15 @@ Dispatchers.IO
         )
     }
 
+    @Scheduled(fixedDelay = 1000)
+    fun updateMetrics() {
+        val processingTime = client.getAverageProcessingTimeMs()
+        paymentQueue.setAverageProcessingTime(processingTime)
+        retryManager.setAverageProcessingTime(processingTime)
+    }
+
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
         val paymentRequest = PaymentRequest(deadline, paymentId, amount, paymentStartedAt)
-//        val canAccept = canAcceptPayment(deadline)
-//
-//        if (!canAccept.first) {
-//            logger.error("[$accountName] Queue overflow! Can't accept payment $paymentId")
-//            val delaySeconds = canAccept.second
-//            throw ResponseStatusException(
-//                HttpStatus.TOO_MANY_REQUESTS,
-//                delaySeconds.toString(),
-//            )
-//        }
 
         if (!paymentQueue.enqueue(paymentRequest)) {
             logger.error("[$accountName] Queue overflow! Can't equeue $paymentId")

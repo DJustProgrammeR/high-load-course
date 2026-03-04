@@ -8,6 +8,7 @@ import java.util.concurrent.ConcurrentSkipListSet
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.ceil
 
+@Deprecated("Use PaymentDispatchBlockingQueue")
 class PaymentDispatchQueue(
     private val rateLimiter: SlidingWindowRateLimiter,
     private val executorScope: CoroutineScope,
