@@ -53,6 +53,13 @@ Dispatchers.IO
         Executors.newSingleThreadExecutor().asCoroutineDispatcher()
     )
 
+    @OptIn(DelicateCoroutinesApi::class)
+    private val metricsScope = CoroutineScope(
+        Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+    )
+
+    private var metricsJob: Job? = null
+
     private val outgoingRateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofSeconds(1L))
 
     private val client = PaymentHttpClient(actualAverageProcessingTime, properties, paymentProviderHostPort, token, 100)
@@ -78,13 +85,8 @@ Dispatchers.IO
         paymentQueue.start(
             CoroutineScope(Executors.newFixedThreadPool(5).asCoroutineDispatcher())
         )
-    }
 
-    @Scheduled(fixedDelay = 1000)
-    fun updateMetrics() {
-        val processingTime = client.getAverageProcessingTimeMs()
-        paymentQueue.setAverageProcessingTime(processingTime)
-        retryManager.setAverageProcessingTime(processingTime)
+        startMetricsUpdater()
     }
 
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
@@ -202,6 +204,24 @@ Dispatchers.IO
 
     override fun canAcceptPayment(deadline: Long): Pair<Boolean, Long> {
         return paymentQueue.canAcceptPayment(deadline)
+    }
+
+    private fun startMetricsUpdater() {
+        metricsJob = metricsScope.launch {
+            while (isActive) {
+                try {
+                    val processingTime = client.getAverageProcessingTimeMs()
+
+                    paymentQueue.setAverageProcessingTime(processingTime)
+                    retryManager.setAverageProcessingTime(processingTime)
+
+                } catch (e: Exception) {
+                    logger.error("Metrics updater failed", e)
+                }
+
+                delay(1000)
+            }
+        }
     }
 }
 
