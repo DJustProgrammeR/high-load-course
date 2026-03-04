@@ -59,7 +59,7 @@ Dispatchers.IO
 
     val retryManager = RetryManager(
         maxTries = 1,
-        avgProcessingTimeMs = actualAverageProcessingTime.toMillis(),
+        avgProcessingTimeMs = actualAverageProcessingTime.toMillis() / 2,
         initialRttMs = 1.2 * actualAverageProcessingTime.toMillis().toDouble(),
         maxTimeoutMs = Duration.ofMillis(1500).toMillis().toDouble()
     )
@@ -68,7 +68,7 @@ Dispatchers.IO
         outgoingRateLimiter,
         executorScope,
         parallelRequests,
-        requestAverageProcessingTime,
+        requestAverageProcessingTime.toMillis() / 2,
         minimalLimitPerSec
     ) { request ->
         performPaymentWithRetry(request)

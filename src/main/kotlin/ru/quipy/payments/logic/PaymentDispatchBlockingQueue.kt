@@ -12,7 +12,7 @@ class PaymentDispatchBlockingQueue(
     private val rateLimiter: SlidingWindowRateLimiter,
     private val executorScope: CoroutineScope,
     private val parallelRequests: Int,
-    private var requestAverageProcessingTime : Duration,
+    private var requestAverageProcessingTime : Long,
     private val minimalLimitPerSec: Double,
     private val handler: suspend (PaymentRequest) -> Unit
 ) {
@@ -34,12 +34,12 @@ class PaymentDispatchBlockingQueue(
     }
 
     fun setAverageProcessingTime(time: Long) {
-        requestAverageProcessingTime = Duration.ofMillis(time)
+        requestAverageProcessingTime = time
     }
 
     fun canAcceptPayment(deadline: Long): Pair<Boolean, Long> {
         val estimatedWait = queue.size / minimalLimitPerSec
-        val willCompleteAt = now() + estimatedWait * 1000 + requestAverageProcessingTime.toMillis()
+        val willCompleteAt = now() + estimatedWait * 1000 + requestAverageProcessingTime
 
         val canMeetDeadline = willCompleteAt < deadline
         val queueOk = queue.size < maxQueueSize

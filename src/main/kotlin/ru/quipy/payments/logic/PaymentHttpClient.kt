@@ -84,7 +84,7 @@ class ProcessingTimeTracker(
     private val sum = AtomicLong(0)
 
     init {
-        add(startAverageProcessingTime)
+        add(startAverageProcessingTime / 2)
     }
 
     fun add(durationMs: Long) {
