@@ -8,7 +8,6 @@ import io.ktor.client.statement.*
 import kotlinx.coroutines.*
 import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
-import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.web.server.ResponseStatusException
 import ru.quipy.common.utils.ratelimiter.SlidingWindowRateLimiter
 import ru.quipy.core.EventSourcingService
@@ -17,6 +16,7 @@ import java.net.SocketTimeoutException
 import java.time.Duration
 import java.util.*
 import java.util.concurrent.Executors
+import kotlin.math.ceil
 import kotlin.math.min
 
 
@@ -36,7 +36,7 @@ class PaymentExternalSystemAdapterImpl(
 
     private val accountName = properties.accountName
     private val requestAverageProcessingTime = properties.averageProcessingTime
-    private val actualAverageProcessingTime = Duration.ofMillis(1000)
+    private var actualAverageProcessingTimeMs = 1000L
     private val rateLimitPerSec = properties.rateLimitPerSec.toDouble()
     private val parallelRequests = properties.parallelRequests
     private val parallelLimitPerSec = properties.parallelRequests.toDouble()/requestAverageProcessingTime.toMillis()
@@ -62,12 +62,12 @@ Dispatchers.IO
 
     private val outgoingRateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofSeconds(1L))
 
-    private val client = PaymentHttpClient(actualAverageProcessingTime, properties, paymentProviderHostPort, token, 100)
+    private val client = PaymentHttpClient(actualAverageProcessingTimeMs, properties, paymentProviderHostPort, token, 100)
 
     val retryManager = RetryManager(
         maxTries = 1,
-        avgProcessingTimeMs = actualAverageProcessingTime.toMillis(),
-        initialRttMs = 1.2 * actualAverageProcessingTime.toMillis().toDouble(),
+        avgProcessingTimeMs = actualAverageProcessingTimeMs,
+        initialRttMs = 1.2 * actualAverageProcessingTimeMs.toDouble(),
         maxTimeoutMs = Duration.ofMillis(1500).toMillis().toDouble()
     )
 
@@ -113,9 +113,10 @@ Dispatchers.IO
 
         val retryRequest = paymentRequest.retryRequestInfo
         while (retryManager.shouldRetry(retryRequest, paymentRequest.deadline)) {
-            val timeout = retryManager.computeDynamicTimeout(paymentRequest.deadline)
+            val timeout = actualAverageProcessingTimeMs // retryManager.computeDynamicTimeout(paymentRequest.deadline)
+            val multiplier = retryManager.getMultiplier()
 
-            when (val result = executeAttempt(paymentRequest, timeout)) {
+            when (val result = executeAttempt(paymentRequest, ceil(timeout * multiplier).toLong())) {
                 is AttemptResult.Success -> {
                     logProcessing(true, paymentRequest, result.body.message)
                     return
@@ -145,8 +146,7 @@ Dispatchers.IO
         timeout: Long
     ): AttemptResult {
         return try {
-            val multiplier = retryManager.getMultiplier()
-            val response: HttpResponse = client.post(paymentRequest, timeout * multiplier)
+            val response: HttpResponse = client.post(paymentRequest, timeout)
 
             val latency = response.responseTime.timestamp - response.requestTime.timestamp
             retryManager.recordLatency(latency)
@@ -210,10 +210,9 @@ Dispatchers.IO
         metricsJob = metricsScope.launch {
             while (isActive) {
                 try {
-                    val processingTime = client.getAverageProcessingTimeMs()
-
-                    paymentQueue.setAverageProcessingTime(processingTime)
-                    retryManager.setAverageProcessingTime(processingTime)
+                    actualAverageProcessingTimeMs = client.getAverageProcessingTimeMs()
+                    paymentQueue.setAverageProcessingTime(actualAverageProcessingTimeMs)
+                    retryManager.setAverageProcessingTime(actualAverageProcessingTimeMs)
 
                 } catch (e: Exception) {
                     logger.error("Metrics updater failed", e)
