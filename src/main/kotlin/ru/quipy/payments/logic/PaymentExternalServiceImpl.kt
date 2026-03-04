@@ -66,7 +66,7 @@ Dispatchers.IO
 
     val retryManager = RetryManager(
         maxTries = 1,
-        avgProcessingTimeMs = actualAverageProcessingTime.toMillis() / 2,
+        avgProcessingTimeMs = actualAverageProcessingTime.toMillis(),
         initialRttMs = 1.2 * actualAverageProcessingTime.toMillis().toDouble(),
         maxTimeoutMs = Duration.ofMillis(1500).toMillis().toDouble()
     )

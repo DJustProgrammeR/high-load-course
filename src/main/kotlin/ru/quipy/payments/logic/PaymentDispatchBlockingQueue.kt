@@ -47,7 +47,6 @@ class PaymentDispatchBlockingQueue(
         return Pair(canMeetDeadline && queueOk, ceil( estimatedWait).toLong())
     }
 
-
     private fun poll() {
         try {
             val paymentRequest = queue.poll() ?: return
