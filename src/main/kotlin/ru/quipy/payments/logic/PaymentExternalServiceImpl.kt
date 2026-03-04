@@ -65,7 +65,7 @@ Dispatchers.IO
     private val client = PaymentHttpClient(actualAverageProcessingTimeMs, properties, paymentProviderHostPort, token, 100)
 
     val retryManager = RetryManager(
-        maxTries = 1,
+        maxTries = 3,
         avgProcessingTimeMs = actualAverageProcessingTimeMs,
         initialRttMs = 1.2 * actualAverageProcessingTimeMs.toDouble(),
         maxTimeoutMs = Duration.ofMillis(1500).toMillis().toDouble()
