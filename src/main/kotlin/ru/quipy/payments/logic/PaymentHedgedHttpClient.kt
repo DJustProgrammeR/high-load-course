@@ -39,8 +39,8 @@ class PaymentHedgedHttpClient(
 
         install(HttpTimeout) {
             requestTimeoutMillis = 2 * averageProcessingTimeMs
-            connectTimeoutMillis = 2 * averageProcessingTimeMs
-            socketTimeoutMillis = 2 * averageProcessingTimeMs
+            connectTimeoutMillis = 1L // TODO count general case not local
+            // socketTimeoutMillis = 2 * averageProcessingTimeMs TODO настроить сокет и время на установку соединения
         }
 
         install(ContentNegotiation) {
@@ -107,8 +107,8 @@ class PaymentHedgedHttpClient(
             return client.post(url) {
                 timeout {
                     requestTimeoutMillis = timeoutMs
-                    socketTimeoutMillis = timeoutMs
-                    connectTimeoutMillis = timeoutMs
+                    //socketTimeoutMillis = timeoutMs TODO настроить сокет и время на установку соединения
+                    connectTimeoutMillis = 1L // TODO count general case not local
                 }
             }
         } finally {

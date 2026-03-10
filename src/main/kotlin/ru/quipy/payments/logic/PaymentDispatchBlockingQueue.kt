@@ -3,6 +3,8 @@ package ru.quipy.payments.logic
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import ru.quipy.common.utils.ratelimiter.SlidingWindowRateLimiter
+import ru.quipy.payments.logic.PaymentExternalSystemAdapterImpl.AttemptResult
+import ru.quipy.payments.logic.PaymentExternalSystemAdapterImpl.Companion.logger
 import java.time.Duration
 import java.util.concurrent.PriorityBlockingQueue
 import java.util.concurrent.atomic.AtomicInteger
@@ -16,7 +18,7 @@ class PaymentDispatchBlockingQueue(
     private val minimalLimitPerSec: Double,
     private val handler: suspend (PaymentRequest) -> Unit
 ) {
-    private val maxQueueSize = 20000
+    private val maxQueueSize = 200
     private val queue = PriorityBlockingQueue<PaymentRequest>(maxQueueSize, compareBy { it.deadline })
     private val inFlight = AtomicInteger(0)
 
@@ -38,7 +40,7 @@ class PaymentDispatchBlockingQueue(
     }
 
     fun canAcceptPayment(deadline: Long): Pair<Boolean, Long> {
-        val estimatedWait = queue.size / minimalLimitPerSec
+        val estimatedWait = queue.size / minimalLimitPerSec // TODO пересчитывать minimalLimitPerSec т.к. requestAverageProcessingTime обновляется
         val willCompleteAt = now() + estimatedWait * 1000 + requestAverageProcessingTime
 
         val canMeetDeadline = willCompleteAt < deadline

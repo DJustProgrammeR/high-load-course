@@ -9,6 +9,7 @@ import kotlinx.coroutines.*
 import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
 import org.springframework.scheduling.annotation.Scheduled
+import org.springframework.stereotype.Service
 import org.springframework.web.server.ResponseStatusException
 import ru.quipy.common.utils.ratelimiter.SlidingWindowRateLimiter
 import ru.quipy.core.EventSourcingService
@@ -28,6 +29,7 @@ class PaymentExternalSystemAdapterImpl(
     private val paymentESService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>,
     paymentProviderHostPort: String,
     token: String,
+    private val metrics: PaymentExternalServiceMetrics,
 ) : PaymentExternalSystemAdapter {
 
     companion object {
@@ -37,7 +39,7 @@ class PaymentExternalSystemAdapterImpl(
 
     private val accountName = properties.accountName
     private val requestAverageProcessingTime = properties.averageProcessingTime
-    private var actualAverageProcessingTimeMs = 1000L
+    private var actualAverageProcessingTimeMs = properties.averageProcessingTime.toMillis() * 2
     private val rateLimitPerSec = properties.rateLimitPerSec.toDouble()
     private val parallelRequests = properties.parallelRequests
     private val parallelLimitPerSec = properties.parallelRequests.toDouble()/requestAverageProcessingTime.toMillis()
@@ -69,7 +71,7 @@ Dispatchers.IO
         outgoingRateLimiter,
         executorScope,
         parallelRequests,
-        requestAverageProcessingTime.toMillis() / 2,
+        requestAverageProcessingTime.toMillis(),
         minimalLimitPerSec
     ) { request ->
         performPaymentWithRetry(request)
@@ -86,6 +88,9 @@ Dispatchers.IO
         actualAverageProcessingTimeMs = client.getAverageProcessingTimeMs()
         paymentQueue.setAverageProcessingTime(actualAverageProcessingTimeMs)
         retryManager.setAverageProcessingTime(actualAverageProcessingTimeMs)
+
+        metrics.queueSize.set(paymentQueue.size())
+        metrics.actualAvgProcessingTime.set(actualAverageProcessingTimeMs.toInt())
     }
 
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
@@ -110,7 +115,7 @@ Dispatchers.IO
             }
         }
 
-        val retryRequest = paymentRequest.retryRequestInfo
+        val retryRequest = RetryRequestInfo(0, now())
         while (retryManager.shouldRetry(retryRequest, paymentRequest.deadline)) {
             val timeout = actualAverageProcessingTimeMs
             val multiplier = retryManager.getMultiplier()
@@ -168,11 +173,11 @@ Dispatchers.IO
                 else -> AttemptResult.RetryableFailure(body)
             }
         } catch (e: SocketTimeoutException) {
-            logger.error("Timeout", e)
+            logger.error("Timeout socket", e)
             retryManager.recordLatency(2 * timeout)
             AttemptResult.RetryableFailure(null, e)
         } catch (e: HttpRequestTimeoutException) {
-            logger.error("Timeout", e)
+            logger.error("Timeout http", e)
             retryManager.recordLatency(2 * timeout)
             AttemptResult.RetryableFailure(null, e)
         } catch (e: Exception) {

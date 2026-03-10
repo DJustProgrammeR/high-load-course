@@ -3,11 +3,14 @@ package ru.quipy.payments.config
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
+import io.micrometer.core.instrument.MeterRegistry
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import org.springframework.stereotype.Service
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
+import ru.quipy.payments.logic.PaymentExternalServiceMetrics
 import ru.quipy.payments.logic.PaymentAccountProperties
 import ru.quipy.payments.logic.PaymentAggregateState
 import ru.quipy.payments.logic.PaymentExternalSystemAdapter
@@ -20,7 +23,10 @@ import java.util.*
 
 
 @Configuration
-class PaymentAccountsConfig {
+@Service
+class PaymentAccountsConfig(
+    private val metrics: PaymentExternalServiceMetrics
+) {
     companion object {
         private val javaClient = HttpClient.newBuilder().build()
         private val mapper = ObjectMapper().registerKotlinModule().registerModules(JavaTimeModule())
@@ -67,7 +73,8 @@ class PaymentAccountsConfig {
                 it,
                 paymentService,
                 paymentProviderHostPort,
-                token
+                token,
+                metrics
             )
         }
     }
