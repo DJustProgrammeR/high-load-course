@@ -6,25 +6,22 @@ import io.micrometer.core.instrument.MeterRegistry
 import io.micrometer.core.instrument.Timer
 import org.springframework.stereotype.Component
 import java.util.concurrent.atomic.AtomicInteger
+import io.micrometer.core.instrument.Metrics
 
-@Component
+
 class PaymentExternalServiceMetrics(
-    registry: MeterRegistry
-) {
-//    val failures: Counter = Counter.builder("external_service_failures_total")
-//        .register(registry)
-//
-//    val latency: Timer = Timer.builder("external_service_latency")
-//        .publishPercentileHistogram()
-//        .register(registry)
+    private val accountName: String
+){
 
     val actualAvgProcessingTime = AtomicInteger()
     val queueSize = AtomicInteger()
 
     init {
         Gauge.builder("payment_queued_requests", queueSize) { it.get().toDouble() }
-            .register(registry)
+            .tag("account", accountName)
+            .register(Metrics.globalRegistry)
         Gauge.builder("actual_avg_processing_time", actualAvgProcessingTime) { it.get().toDouble() }
-            .register(registry)
+            .tag("account", accountName)
+            .register(Metrics.globalRegistry)
     }
 }

@@ -23,10 +23,7 @@ import java.util.*
 
 
 @Configuration
-@Service
-class PaymentAccountsConfig(
-    private val metrics: PaymentExternalServiceMetrics
-) {
+class PaymentAccountsConfig {
     companion object {
         private val javaClient = HttpClient.newBuilder().build()
         private val mapper = ObjectMapper().registerKotlinModule().registerModules(JavaTimeModule())
@@ -74,7 +71,7 @@ class PaymentAccountsConfig(
                 paymentService,
                 paymentProviderHostPort,
                 token,
-                metrics
+                PaymentExternalServiceMetrics(it.accountName),
             )
         }
     }
