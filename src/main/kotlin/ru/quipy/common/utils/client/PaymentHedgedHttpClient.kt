@@ -1,4 +1,4 @@
-package ru.quipy.payments.logic
+package ru.quipy.common.utils.client
 
 import io.ktor.client.*
 import io.ktor.client.engine.java.*
@@ -17,6 +17,8 @@ import kotlin.math.min
 import kotlinx.coroutines.*
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.selects.onTimeout
+import ru.quipy.payments.logic.PaymentAccountProperties
+import ru.quipy.payments.logic.PaymentRequest
 
 @Suppress("Since15")
 class PaymentHedgedHttpClient(
