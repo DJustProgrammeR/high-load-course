@@ -1,22 +1,28 @@
 package ru.quipy.payments.logic
 
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.DelicateCoroutinesApi
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import ru.quipy.common.utils.ratelimiter.SlidingWindowRateLimiter
-import java.time.Duration
+import ru.quipy.common.utils.circuitbreaker.CircuitBreaker
+import ru.quipy.common.utils.ratelimiter.RateLimiter
 import java.util.concurrent.PriorityBlockingQueue
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.ceil
 
 class PaymentDispatchBlockingQueue(
-    private val rateLimiter: SlidingWindowRateLimiter,
-    private val executorScope: CoroutineScope,
+    private val rateLimiter: RateLimiter?,
     private val parallelRequests: Int,
     private var requestAverageProcessingTime : Long,
     private val minimalLimitPerSec: Double,
+    private val circuitBreaker: CircuitBreaker?,
     private val handler: suspend (PaymentRequest) -> Unit
 ) {
-    private val maxQueueSize = 20000
+    @OptIn(DelicateCoroutinesApi::class)
+    private val executorScope = CoroutineScope(
+        Dispatchers.IO
+    )
+    private val maxQueueSize = 1000
     private val queue = PriorityBlockingQueue<PaymentRequest>(maxQueueSize, compareBy { it.deadline })
     private val inFlight = AtomicInteger(0)
 
@@ -38,13 +44,13 @@ class PaymentDispatchBlockingQueue(
     }
 
     fun canAcceptPayment(deadline: Long): Pair<Boolean, Long> {
-        val estimatedWait = queue.size / minimalLimitPerSec
+        val estimatedWait = queue.size / minimalLimitPerSec // TODO пересчитывать minimalLimitPerSec т.к. requestAverageProcessingTime обновляется
         val willCompleteAt = now() + estimatedWait * 1000 + requestAverageProcessingTime
 
         val canMeetDeadline = willCompleteAt < deadline
         val queueOk = queue.size < maxQueueSize
 
-        return Pair(canMeetDeadline && queueOk, ceil( estimatedWait).toLong())
+        return Pair(canMeetDeadline && queueOk, ceil(estimatedWait).toLong())
     }
 
     private fun poll() {
@@ -57,7 +63,13 @@ class PaymentDispatchBlockingQueue(
                 return
             }
 
-            if (!rateLimiter.tick()) {
+            if (!rateLimiter!!.tick()) {
+                inFlight.decrementAndGet()
+                queue.add(paymentRequest)
+                return
+            }
+
+            if (!circuitBreaker!!.tryAcquire()) {
                 inFlight.decrementAndGet()
                 queue.add(paymentRequest)
                 return

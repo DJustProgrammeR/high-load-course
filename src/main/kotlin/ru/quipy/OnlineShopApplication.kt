@@ -7,6 +7,8 @@ import org.springframework.boot.runApplication
 import ru.quipy.common.utils.NamedThreadFactory
 import java.util.concurrent.Executors
 
+//import java.net.InetSocketAddress
+//import java.net.Socket
 
 @SpringBootApplication
 class OnlineShopApplication {
@@ -18,5 +20,21 @@ class OnlineShopApplication {
 }
 
 fun main(args: Array<String>) {
+//    System.out.println(measureConnectionTime("127.0.0.1", 1234))
     runApplication<OnlineShopApplication>(*args)
 }
+//
+//fun measureConnectionTime(host: String, port: Int): Long {
+//    var  c  = 0L;
+//    for (i in 0 .. 400) {
+//        val start = System.nanoTime()
+//
+//        Socket().use { socket ->
+//            socket.connect(InetSocketAddress(host, port))
+//        }
+//        c = c +  System.nanoTime() - start
+//    }
+//
+//
+//    return c/400L
+//}

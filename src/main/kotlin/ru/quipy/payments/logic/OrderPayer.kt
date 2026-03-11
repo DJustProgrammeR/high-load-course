@@ -28,7 +28,7 @@ class OrderPayer {
         if (!canAccept) {
             throw ResponseStatusException(
                 HttpStatus.TOO_MANY_REQUESTS,
-                3L.toString()
+                delaySeconds.toString()
             )
         }
 
@@ -40,7 +40,7 @@ class OrderPayer {
                 amount
             )
         }
-        logger.trace("Payment {} for order {} created.", createdEvent.paymentId, orderId)
+        logger.trace("Payment {} for order {} created.", paymentId, orderId)
 
         paymentService.submitPaymentRequest(paymentId, amount, createdAt, deadline)
         return createdAt
