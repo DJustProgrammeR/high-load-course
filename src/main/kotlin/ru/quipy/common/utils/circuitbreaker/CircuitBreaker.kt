@@ -22,37 +22,36 @@ class CircuitBreaker(
 
     @Volatile
     private var openTimestamp = 0L
-    @Volatile
-    private var closeTimestamp = 0L
-
-    init {
-        closeTimestamp = now()
-        metricsScope.launch {
-            while (isActive) {
-                failRate = computeSuccessRate()
-                metrics!!.cbFailRate.set(failRate)
-                when (state.get()) {
-                    State.CLOSED -> metrics.cbState.set(0)
-                    State.OPEN -> metrics.cbState.set(2)
-                    State.HALF_OPEN -> metrics.cbState.set(1)
-                }
-                delay(500)
-            }
-        }
-    }
 
     private enum class State { CLOSED, OPEN, HALF_OPEN }
 
     private data class Event(
         val timestamp: Long,
-//        val started: Boolean,
-//        val success: Boolean
+        val fail: Boolean,
+        val timeout: Boolean,
     )
 
     private val events = ArrayDeque<Event>()
 
     private val state = AtomicReference(State.CLOSED)
+
     private var failRate = 0
+
+    init {
+        metrics!!.cbState.set(0)
+        metricsScope.launch {
+            while (isActive) {
+                failRate = computeSuccessRate()
+                metrics.cbFailRate.set(failRate)
+                when (state.get()) {
+                    State.CLOSED -> metrics.cbState.set(0)
+                    State.HALF_OPEN -> metrics.cbState.set(1)
+                    State.OPEN -> metrics.cbState.set(2)
+                }
+                delay(200)
+            }
+        }
+    }
 
     private val halfOpenTestRunning = AtomicInteger(0)
 
@@ -69,14 +68,10 @@ class CircuitBreaker(
         cleanupOldEvents()
 
         val failed = events.count()
-//        val success = events.count { it.success }
-
-//        if (started == 0) return 1.0
         return failed
     }
 
     fun tryAcquire(): Boolean {
-
         when (state.get()) {
 
             State.CLOSED -> return true
@@ -103,17 +98,8 @@ class CircuitBreaker(
         return halfOpenTestRunning.compareAndSet(0, 1)
     }
 
-    fun reportStart() {
-        synchronized(events) {
-//            events.addLast(Event(now(), started = true, success = false))
-        }
-    }
-
     fun reportSuccess() {
-        //synchronized(events) {
-
-//            events.addLast(Event(now(), started = false, success = true))
-            println("success")
+        synchronized(events) {
             when (state.get()) {
 
                 State.CLOSED -> {
@@ -132,13 +118,32 @@ class CircuitBreaker(
 
                 State.OPEN -> {}
             }
-        //}
+        }
     }
 
     fun reportFail() {
         synchronized(events) {
+            events.addLast(Event(now(), fail = true, timeout = false))
+            when (state.get()) {
 
-            events.addLast(Event(now()))
+                State.CLOSED -> {}
+
+                State.HALF_OPEN -> {
+
+                    state.set(State.OPEN)
+                    openTimestamp = now()
+
+                    halfOpenTestRunning.set(0)
+                }
+
+                State.OPEN -> {}
+            }
+        }
+    }
+
+    fun reportTimeout() {
+        synchronized(events) {
+            events.addLast(Event(now(), fail = false, timeout = true))
             when (state.get()) {
 
                 State.CLOSED -> {}

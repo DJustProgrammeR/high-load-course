@@ -11,9 +11,8 @@ import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
 import org.springframework.web.server.ResponseStatusException
 import ru.quipy.common.utils.circuitbreaker.CircuitBreaker
-import ru.quipy.common.utils.client.PaymentHedgedHttpClient
 import ru.quipy.common.utils.metric.MetricsCollector
-import ru.quipy.common.utils.queue.PaymentDispatchBlockingQueue
+import ru.quipy.payments.logic.PaymentDispatchBlockingQueue
 import ru.quipy.common.utils.ratelimiter.RateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
@@ -21,7 +20,6 @@ import java.net.SocketTimeoutException
 import java.time.Duration
 import java.util.*
 import java.util.concurrent.Executors
-import kotlin.math.ceil
 import kotlin.math.min
 
 
@@ -44,7 +42,7 @@ class PaymentExternalSystemAdapterImpl(
 
     private val accountName = properties.accountName
     private val requestAverageProcessingTime = properties.averageProcessingTime
-    private var actualAverageProcessingTimeMs = properties.averageProcessingTime.toMillis() * 2
+    private var actualAverageProcessingTimeMs = properties.averageProcessingTime.toMillis()
     private val rateLimitPerSec = properties.rateLimitPerSec.toDouble()
     private val parallelRequests = properties.parallelRequests
     private val parallelLimitPerSec = properties.parallelRequests.toDouble() / requestAverageProcessingTime.toMillis()
@@ -60,7 +58,7 @@ class PaymentExternalSystemAdapterImpl(
         PaymentHedgedHttpClient(actualAverageProcessingTimeMs, properties, paymentProviderHostPort, token, 100)
 
     private val retryManager = RetryManager(
-        maxTries = 2,
+        maxTries = 4,
         avgProcessingTimeMs = actualAverageProcessingTimeMs,
         initialRttMs = 1.2 * actualAverageProcessingTimeMs.toDouble(),
         maxTimeoutMs = Duration.ofMillis(1500).toMillis().toDouble()
@@ -126,12 +124,13 @@ class PaymentExternalSystemAdapterImpl(
             }
         }
 
+
         val retryRequest = RetryRequestInfo(0, now())
         while (retryManager.shouldRetry(retryRequest, paymentRequest.deadline)) {
             val timeout = actualAverageProcessingTimeMs
-            val multiplier = retryManager.getMultiplier()
+            val multiplier = retryManager.getScalingMultiplier(retryRequest.attempt)
 
-            when (val result = executeAttempt(paymentRequest, ceil(timeout * multiplier).toLong())) {
+            when (val result = executeAttempt(paymentRequest, timeout * multiplier)) {
                 is AttemptResult.Success -> {
                     logProcessing(true, paymentRequest, result.body.message)
                     circuitBreaker!!.reportSuccess()

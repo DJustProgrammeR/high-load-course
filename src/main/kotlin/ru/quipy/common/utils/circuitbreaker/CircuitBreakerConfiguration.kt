@@ -18,8 +18,8 @@ public class CircuitBreakerConfiguration {
                     .associateBy(PaymentAccountProperties::accountName)
             .mapValues {
         when (it.key) {
-            "acc-19" -> CircuitBreaker(Duration.ofMillis(1000),100, Duration.ofMillis(50),metricsCollectors[it.key] )
-                    else -> CircuitBreaker(Duration.ofSeconds(1),100, Duration.ofMillis(100),metricsCollectors[it.key] )
+            "acc-19" -> CircuitBreaker(Duration.ofMillis(1000),90, Duration.ofMillis(50),metricsCollectors[it.key] )
+                    else -> null
         }
     }
 }

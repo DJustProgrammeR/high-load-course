@@ -1,4 +1,4 @@
-package ru.quipy.common.utils.queue
+package ru.quipy.payments.logic
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.DelicateCoroutinesApi
@@ -6,8 +6,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import ru.quipy.common.utils.circuitbreaker.CircuitBreaker
 import ru.quipy.common.utils.ratelimiter.RateLimiter
-import ru.quipy.payments.logic.PaymentRequest
-import ru.quipy.payments.logic.now
 import java.util.concurrent.PriorityBlockingQueue
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.ceil
@@ -24,7 +22,7 @@ class PaymentDispatchBlockingQueue(
     private val executorScope = CoroutineScope(
         Dispatchers.IO
     )
-    private val maxQueueSize = 1000
+    private val maxQueueSize = 400
     private val queue = PriorityBlockingQueue<PaymentRequest>(maxQueueSize, compareBy { it.deadline })
     private val inFlight = AtomicInteger(0)
 
@@ -59,12 +57,6 @@ class PaymentDispatchBlockingQueue(
         try {
             val paymentRequest = queue.poll() ?: return
 
-            if (!circuitBreaker!!.tryAcquire()) {
-                inFlight.decrementAndGet()
-                queue.add(paymentRequest)
-                return
-            }
-
             if (inFlight.incrementAndGet() > parallelRequests) {
                 inFlight.decrementAndGet()
                 queue.add(paymentRequest)
@@ -77,9 +69,14 @@ class PaymentDispatchBlockingQueue(
                 return
             }
 
+            if (!circuitBreaker!!.tryAcquire()) {
+                inFlight.decrementAndGet()
+                queue.add(paymentRequest)
+                return
+            }
+
             executorScope.launch {
                 try {
-//                    circuitBreaker.reportStart()
                     handler(paymentRequest)
                 } finally {
                     inFlight.decrementAndGet()

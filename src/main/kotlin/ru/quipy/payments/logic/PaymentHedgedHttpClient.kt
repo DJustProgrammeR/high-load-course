@@ -1,4 +1,4 @@
-package ru.quipy.common.utils.client
+package ru.quipy.payments.logic
 
 import io.ktor.client.*
 import io.ktor.client.engine.java.*
@@ -17,12 +17,10 @@ import kotlin.math.min
 import kotlinx.coroutines.*
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.selects.onTimeout
-import ru.quipy.payments.logic.PaymentAccountProperties
-import ru.quipy.payments.logic.PaymentRequest
 
 @Suppress("Since15")
 class PaymentHedgedHttpClient(
-    averageProcessingTimeMs: Long,
+    private val averageProcessingTimeMs: Long,
     properties: PaymentAccountProperties,
     private val paymentProviderHostPort: String,
     private val token: String,
@@ -41,7 +39,7 @@ class PaymentHedgedHttpClient(
 
         install(HttpTimeout) {
             requestTimeoutMillis = 2 * averageProcessingTimeMs
-            connectTimeoutMillis = 1L // TODO count general case not local
+//            connectTimeoutMillis = 1L // TODO count general case not local
             // socketTimeoutMillis = 2 * averageProcessingTimeMs TODO настроить сокет и время на установку соединения
         }
 
@@ -58,6 +56,7 @@ class PaymentHedgedHttpClient(
     suspend fun post(paymentRequest: PaymentRequest): HttpResponse = coroutineScope {
 
         val avg = getAverageProcessingTimeMs().coerceAtLeast(1)
+//        val timeoutMs = max(2 * avg,(0.9*averageProcessingTimeMs).toLong())
         val timeoutMs = 2 * avg
         val hedgeDelayMs = (avg * 0.5).toLong().coerceAtLeast(1)
 
@@ -105,16 +104,16 @@ class PaymentHedgedHttpClient(
 
         val start = System.nanoTime()
 
-        try {
+        try{
             return client.post(url) {
                 timeout {
                     requestTimeoutMillis = timeoutMs
                     //socketTimeoutMillis = timeoutMs TODO настроить сокет и время на установку соединения
-                    connectTimeoutMillis = 1L // TODO count general case not local
+//                    connectTimeoutMillis = 1L // TODO count general case not local
                 }
             }
         } finally {
-            val durationMs = (System.nanoTime() - start) / 1_000_000
+            val durationMs = (System.nanoTime() - start)/1_000_000
             processingTracker.add(durationMs)
         }
     }
@@ -129,7 +128,7 @@ class ProcessingTimeTracker(
     private val sum = AtomicLong(0)
 
     init {
-        add(startAverageProcessingTime / 2)
+        add(startAverageProcessingTime)
     }
 
     fun add(durationMs: Long) {
