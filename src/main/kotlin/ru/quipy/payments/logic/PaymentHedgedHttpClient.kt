@@ -39,8 +39,8 @@ class PaymentHedgedHttpClient(
 
         install(HttpTimeout) {
             requestTimeoutMillis = 2 * averageProcessingTimeMs
-//            connectTimeoutMillis = 1L // TODO count general case not local
-            // socketTimeoutMillis = 2 * averageProcessingTimeMs TODO настроить сокет и время на установку соединения
+            connectTimeoutMillis = 1L // TODO count general case not local
+            socketTimeoutMillis = 50L
         }
 
         install(ContentNegotiation) {
@@ -53,11 +53,11 @@ class PaymentHedgedHttpClient(
     }
 
     @OptIn(ExperimentalCoroutinesApi::class)
-    suspend fun post(paymentRequest: PaymentRequest): HttpResponse = coroutineScope {
+    suspend fun post(paymentRequest: PaymentRequest, multiplier: Long): HttpResponse = coroutineScope {
 
         val avg = getAverageProcessingTimeMs().coerceAtLeast(1)
-//        val timeoutMs = max(2 * avg,(0.9*averageProcessingTimeMs).toLong())
-        val timeoutMs = 2 * avg
+        val timeoutMs = min(2 * avg, averageProcessingTimeMs * 2)
+//        val timeoutMs = 100L
         val hedgeDelayMs = (avg * 0.5).toLong().coerceAtLeast(1)
 
         val url = "http://$paymentProviderHostPort/external/process" +
@@ -108,8 +108,8 @@ class PaymentHedgedHttpClient(
             return client.post(url) {
                 timeout {
                     requestTimeoutMillis = timeoutMs
-                    //socketTimeoutMillis = timeoutMs TODO настроить сокет и время на установку соединения
-//                    connectTimeoutMillis = 1L // TODO count general case not local
+                    socketTimeoutMillis = 50L
+                    connectTimeoutMillis = 1L // TODO count general case not local
                 }
             }
         } finally {

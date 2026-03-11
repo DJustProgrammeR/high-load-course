@@ -6,6 +6,7 @@ import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import io.ktor.client.call.*
 import io.ktor.client.plugins.*
 import io.ktor.client.statement.*
+import io.ktor.util.date.minus
 import kotlinx.coroutines.*
 import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
@@ -40,7 +41,7 @@ class PaymentExternalSystemAdapterImpl(
         val mapper = ObjectMapper().registerKotlinModule()
     }
 
-    private val accountName = properties.accountName
+//    private val accountName = properties.accountName
     private val requestAverageProcessingTime = properties.averageProcessingTime
     private var actualAverageProcessingTimeMs = properties.averageProcessingTime.toMillis()
     private val rateLimitPerSec = properties.rateLimitPerSec.toDouble()
@@ -58,7 +59,7 @@ class PaymentExternalSystemAdapterImpl(
         PaymentHedgedHttpClient(actualAverageProcessingTimeMs, properties, paymentProviderHostPort, token, 100)
 
     private val retryManager = RetryManager(
-        maxTries = 4,
+        maxTries = 1,
         avgProcessingTimeMs = actualAverageProcessingTimeMs,
         initialRttMs = 1.2 * actualAverageProcessingTimeMs.toDouble(),
         maxTimeoutMs = Duration.ofMillis(1500).toMillis().toDouble()
@@ -83,7 +84,7 @@ class PaymentExternalSystemAdapterImpl(
         metricsScope.launch {
             while (isActive) {
                 updateMetrics()
-                delay(500)
+                delay(1000)
             }
         }
     }
@@ -113,27 +114,20 @@ class PaymentExternalSystemAdapterImpl(
     private suspend fun performPaymentWithRetry(paymentRequest: PaymentRequest) {
         //logger.info("[$accountName] Submitting payment request for payment ${paymentRequest.paymentId}, txId: ${paymentRequest.transactionId}")
 
-        dbScope.launch {
-            paymentESService.update(paymentRequest.paymentId) {
-                it.logSubmission(
-                    success = true,
-                    paymentRequest.transactionId,
-                    now(),
-                    Duration.ofMillis(now() - paymentRequest.paymentStartedAt)
-                )
-            }
-        }
-
+        logSubmission(paymentRequest)
 
         val retryRequest = RetryRequestInfo(0, now())
         while (retryManager.shouldRetry(retryRequest, paymentRequest.deadline)) {
-            val timeout = actualAverageProcessingTimeMs
+//            val timeout = actualAverageProcessingTimeMs
             val multiplier = retryManager.getScalingMultiplier(retryRequest.attempt)
 
-            when (val result = executeAttempt(paymentRequest, timeout * multiplier)) {
+            when (val result = executeAttempt(paymentRequest, multiplier/*, timeout * multiplier*/)) {
                 is AttemptResult.Success -> {
                     logProcessing(true, paymentRequest, result.body.message)
-                    circuitBreaker!!.reportSuccess()
+                    when {
+                        result.durationMs >= client.getAverageProcessingTimeMs()*1.3 -> circuitBreaker!!.reportSlow()
+                        else -> circuitBreaker!!.reportSuccess()
+                    }
                     return
                 }
 
@@ -155,6 +149,8 @@ class PaymentExternalSystemAdapterImpl(
             else -> "All retry attempts (${retryRequest.attempt}) exhausted"
         }
 
+
+        paymentQueue.enqueue(paymentRequest)
         circuitBreaker!!.reportFail()
         //logger.error("[$accountName] Payment failed after retries for txId: ${paymentRequest.transactionId}, payment: ${paymentRequest.paymentId} — reason: $reason")
         logProcessing(false, paymentRequest, reason)
@@ -162,13 +158,13 @@ class PaymentExternalSystemAdapterImpl(
 
     private suspend fun executeAttempt(
         paymentRequest: PaymentRequest,
-        timeout: Long
+        multiplier: Long
     ): AttemptResult {
         return try {
-            val response: HttpResponse = client.post(paymentRequest)
+            val response: HttpResponse = client.post(paymentRequest, multiplier)
 
-            val latency = response.responseTime.timestamp - response.requestTime.timestamp
-            retryManager.recordLatency(latency)
+            //val latency = response.responseTime.timestamp - response.requestTime.timestamp
+            //retryManager.recordLatency(latency)
 
             val body = runCatching {
                 response.body<ExternalSysResponse>()
@@ -182,7 +178,7 @@ class PaymentExternalSystemAdapterImpl(
             }
 
             when {
-                body.result -> AttemptResult.Success(body)
+                body.result -> AttemptResult.Success(body, (response.responseTime.timestamp - response.requestTime.timestamp))
                 response.status.value in 400..499 && response.status.value != 429 ->
                     AttemptResult.NonRetryableFailure(body, response.status.value)
 
@@ -190,15 +186,28 @@ class PaymentExternalSystemAdapterImpl(
             }
         } catch (e: SocketTimeoutException) {
             //logger.error("Timeout socket", e)
-            retryManager.recordLatency(2 * timeout)
+            //retryManager.recordLatency(2 * timeout)
             AttemptResult.RetryableFailure(null, e)
         } catch (e: HttpRequestTimeoutException) {
             //logger.error("Timeout http", e)
-            retryManager.recordLatency(2 * timeout)
+            //retryManager.recordLatency(2 * timeout)
             AttemptResult.RetryableFailure(null, e)
         } catch (e: Exception) {
             //logger.error("Payment failed", e)
             AttemptResult.RetryableFailure(null, e)
+        }
+    }
+
+    private fun logSubmission(paymentRequest: PaymentRequest) {
+        dbScope.launch {
+            paymentESService.update(paymentRequest.paymentId) {
+                it.logSubmission(
+                    success = true,
+                    paymentRequest.transactionId,
+                    now(),
+                    Duration.ofMillis(now() - paymentRequest.paymentStartedAt)
+                )
+            }
         }
     }
 
@@ -211,7 +220,7 @@ class PaymentExternalSystemAdapterImpl(
     }
 
     sealed class AttemptResult {
-        data class Success(val body: ExternalSysResponse) : AttemptResult()
+        data class Success(val body: ExternalSysResponse, val durationMs: Long) : AttemptResult()
         data class NonRetryableFailure(val body: ExternalSysResponse, val statusCode: Int) : AttemptResult()
         data class RetryableFailure(val body: ExternalSysResponse?, val error: Throwable? = null) : AttemptResult()
     }

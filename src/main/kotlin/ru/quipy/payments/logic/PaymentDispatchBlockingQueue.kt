@@ -22,7 +22,7 @@ class PaymentDispatchBlockingQueue(
     private val executorScope = CoroutineScope(
         Dispatchers.IO
     )
-    private val maxQueueSize = 400
+    private val maxQueueSize = 1000
     private val queue = PriorityBlockingQueue<PaymentRequest>(maxQueueSize, compareBy { it.deadline })
     private val inFlight = AtomicInteger(0)
 

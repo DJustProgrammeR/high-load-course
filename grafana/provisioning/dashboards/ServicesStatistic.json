@@ -1941,9 +1941,21 @@
           "legendFormat": "__auto",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "editorMode": "builder",
+          "expr": "cb_slow_rate",
+          "instant": false,
+          "legendFormat": "__auto",
+          "range": true,
+          "refId": "B"
         }
       ],
-      "title": "CB fail rate",
+      "title": "CB fail/slow rate(не верить)",
       "type": "timeseries"
     },
     {
@@ -2037,7 +2049,7 @@
           "refId": "A"
         }
       ],
-      "title": "Cb state",
+      "title": "Cb state(не верить)",
       "type": "timeseries"
     },
     {
@@ -4073,6 +4085,6 @@
   "timezone": "browser",
   "title": "Services statistic",
   "uid": "KVr-Vmpnz",
-  "version": 13,
+  "version": 18,
   "weekStart": ""
 }

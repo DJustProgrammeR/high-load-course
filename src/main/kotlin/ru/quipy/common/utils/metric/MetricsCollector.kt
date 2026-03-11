@@ -12,7 +12,8 @@ class MetricsCollector(
 
     val actualAvgProcessingTime = AtomicInteger()
     val queueSize = AtomicInteger()
-    val cbFailRate = AtomicInteger()
+    val cbFailRate = AtomicDouble()
+    val cbSlowRate = AtomicDouble()
     val cbState = AtomicInteger()
 
     init {
@@ -22,7 +23,10 @@ class MetricsCollector(
         Gauge.builder("actual_avg_processing_time", actualAvgProcessingTime) { it.get().toDouble() }
             .tag("account", accountName)
             .register(Metrics.globalRegistry)
-        Gauge.builder("cb_fail_rate", cbFailRate) { it.get().toDouble() }
+        Gauge.builder("cb_fail_rate", cbFailRate) { it.get() }
+            .tag("account", accountName)
+            .register(Metrics.globalRegistry)
+        Gauge.builder("cb_slow_rate", cbSlowRate) { it.get() }
             .tag("account", accountName)
             .register(Metrics.globalRegistry)
         Gauge.builder("cb_state", cbState) { it.get().toDouble() }
