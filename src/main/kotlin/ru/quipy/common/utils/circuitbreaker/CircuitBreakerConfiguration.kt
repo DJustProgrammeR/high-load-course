@@ -25,10 +25,10 @@ public class CircuitBreakerConfiguration {
                 "payment-$it.key",
                 CircuitBreakerConfig.custom()
                     .slidingWindowType(SlidingWindowType.TIME_BASED)
-                    .slidingWindowSize(1)
-                    .failureRateThreshold(50.0f)
+                    .slidingWindowSize(2)
+                    .failureRateThreshold(35.0f)
                     .minimumNumberOfCalls(10)
-                    .waitDurationInOpenState(Duration.ofSeconds(4))
+                    .waitDurationInOpenState(Duration.ofSeconds(3))
                     .permittedNumberOfCallsInHalfOpenState(3)
                     .slowCallDurationThreshold(it.value.averageProcessingTime.multipliedBy(6).dividedBy(5))
                     .build()
