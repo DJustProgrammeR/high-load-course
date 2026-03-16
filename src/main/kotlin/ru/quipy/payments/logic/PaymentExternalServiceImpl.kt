@@ -154,7 +154,7 @@ class PaymentExternalSystemAdapterImpl(
         }
 
 
-        paymentQueue.enqueue(paymentRequest)
+        //paymentQueue.enqueue(paymentRequest)
 //        circuitBreaker!!.reportFail()
         logger.error("[$accountName] Payment failed after retries for txId: ${paymentRequest.transactionId}, payment: ${paymentRequest.paymentId} — reason: $reason")
         logProcessing(false, paymentRequest, reason)

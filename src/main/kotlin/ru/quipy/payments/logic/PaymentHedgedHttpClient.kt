@@ -6,6 +6,7 @@ import io.ktor.client.plugins.*
 import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
+import io.ktor.http.HttpHeaders
 import io.ktor.serialization.jackson.*
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.asCoroutineDispatcher
@@ -17,6 +18,7 @@ import kotlin.math.min
 import kotlinx.coroutines.*
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.selects.onTimeout
+import java.util.UUID
 
 @Suppress("Since15")
 class PaymentHedgedHttpClient(
@@ -57,6 +59,7 @@ class PaymentHedgedHttpClient(
 
         val avg = getAverageProcessingTimeMs().coerceAtLeast(1)
         val timeoutMs = min(2 * avg, (averageProcessingTimeMs *1.2).toLong())
+        val idempotencyKey = UUID.randomUUID().toString()
 //        val timeoutMs = 100L
         val hedgeDelayMs = (avg * 0.5).toLong().coerceAtLeast(1)
 
@@ -69,11 +72,11 @@ class PaymentHedgedHttpClient(
                 "&amount=${paymentRequest.amount}"
 
         val primary = async {
-            timedRequest(url, timeoutMs)
+            timedRequest(url, timeoutMs/*, idempotencyKey*/)
         }
 
 //        val hedged = async(start = CoroutineStart.LAZY) {
-//            timedRequest(url, timeoutMs)
+//            timedRequest(url, timeoutMs, idempotencyKey)
 //        }
 
         val winner = select {
@@ -99,13 +102,17 @@ class PaymentHedgedHttpClient(
 
     private suspend fun timedRequest(
         url: String,
-        timeoutMs: Long
+        timeoutMs: Long,
+//        idempotencyKey: String,
     ): HttpResponse {
 
         val start = System.nanoTime()
 
         try {
             return client.post(url) {
+//                headers {
+//                    append("x-idempotency-key", idempotencyKey)
+//                }
                 timeout {
                     requestTimeoutMillis = timeoutMs
                     socketTimeoutMillis = timeoutMs //50L
