@@ -25,11 +25,11 @@ public class CircuitBreakerConfiguration {
                 "payment-$it.key",
                 CircuitBreakerConfig.custom()
                     .slidingWindowType(SlidingWindowType.TIME_BASED)
-                    .slidingWindowSize(2) // За какие N секунд считаем вызовы
+                    .slidingWindowSize(2)
                     .failureRateThreshold(30.0f)
-                    .minimumNumberOfCalls(10) // Минимальное число вызовов в окне, прежде чем оценивать threshold
-                    .waitDurationInOpenState(Duration.ofSeconds(3)) // Сколько остаётся в состоянии OPEN, прежде чем перейти в HALF_OPEN и попробовать пропустить несколько запросов
-                    .permittedNumberOfCallsInHalfOpenState(3) // Сколько запросов разрешено пропустить в HALF_OPEN, чтобы проверить ожил ли сервис
+                    .minimumNumberOfCalls(10)
+                    .waitDurationInOpenState(Duration.ofSeconds(3))
+                    .permittedNumberOfCallsInHalfOpenState(3)
                     .build()
             )
                     else -> null

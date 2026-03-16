@@ -56,7 +56,7 @@ class PaymentHedgedHttpClient(
     suspend fun post(paymentRequest: PaymentRequest, multiplier: Long): HttpResponse = coroutineScope {
 
         val avg = getAverageProcessingTimeMs().coerceAtLeast(1)
-        val timeoutMs = min(2 * avg, averageProcessingTimeMs * 2)
+        val timeoutMs = min(2 * avg, (averageProcessingTimeMs *1.2).toLong())
 //        val timeoutMs = 100L
         val hedgeDelayMs = (avg * 0.5).toLong().coerceAtLeast(1)
 
@@ -72,9 +72,9 @@ class PaymentHedgedHttpClient(
             timedRequest(url, timeoutMs)
         }
 
-        val hedged = async(start = CoroutineStart.LAZY) {
-            timedRequest(url, timeoutMs)
-        }
+//        val hedged = async(start = CoroutineStart.LAZY) {
+//            timedRequest(url, timeoutMs)
+//        }
 
         val winner = select {
             primary.onAwait { response ->
@@ -82,17 +82,17 @@ class PaymentHedgedHttpClient(
             }
 
             onTimeout(hedgeDelayMs) {
-                hedged.start()
+//                hedged.start()
 
                 select {
                     primary.onAwait { it }
-                    hedged.onAwait { it }
+//                    hedged.onAwait { it }
                 }
             }
         }
 
         primary.cancel()
-        hedged.cancel()
+//        hedged.cancel()
 
         winner
     }
