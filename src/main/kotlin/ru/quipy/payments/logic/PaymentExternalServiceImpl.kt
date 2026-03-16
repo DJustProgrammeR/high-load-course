@@ -11,7 +11,7 @@ import kotlinx.coroutines.*
 import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
 import org.springframework.web.server.ResponseStatusException
-import ru.quipy.common.utils.circuitbreaker.CircuitBreaker
+//import ru.quipy.common.utils.circuitbreaker.CircuitBreaker
 import ru.quipy.common.utils.metric.MetricsCollector
 import ru.quipy.payments.logic.PaymentDispatchBlockingQueue
 import ru.quipy.common.utils.ratelimiter.RateLimiter
@@ -22,6 +22,10 @@ import java.time.Duration
 import java.util.*
 import java.util.concurrent.Executors
 import kotlin.math.min
+import io.github.resilience4j.circuitbreaker.CircuitBreaker
+import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig
+import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig.SlidingWindowType
+import java.util.concurrent.TimeUnit
 
 
 // Advice: always treat time as a Duration
@@ -41,7 +45,7 @@ class PaymentExternalSystemAdapterImpl(
         val mapper = ObjectMapper().registerKotlinModule()
     }
 
-//    private val accountName = properties.accountName
+    //    private val accountName = properties.accountName
     private val requestAverageProcessingTime = properties.averageProcessingTime
     private var actualAverageProcessingTimeMs = properties.averageProcessingTime.toMillis()
     private val rateLimitPerSec = properties.rateLimitPerSec.toDouble()
@@ -124,21 +128,27 @@ class PaymentExternalSystemAdapterImpl(
             when (val result = executeAttempt(paymentRequest, multiplier/*, timeout * multiplier*/)) {
                 is AttemptResult.Success -> {
                     logProcessing(true, paymentRequest, result.body.message)
-                    when {
-                        result.durationMs >= client.getAverageProcessingTimeMs()*1.3 -> circuitBreaker!!.reportSlow()
-                        else -> circuitBreaker!!.reportSuccess()
-                    }
+                    circuitBreaker!!.onSuccess(now() - retryRequest.startTime, TimeUnit.MILLISECONDS)
+//                    when {
+//                        result.durationMs >= client.getAverageProcessingTimeMs()*1.3 -> circuitBreaker!!.reportSlow()
+//                        else -> circuitBreaker!!.reportSuccess()
+//                    }
                     return
                 }
 
                 is AttemptResult.NonRetryableFailure -> {
                     logProcessing(false, paymentRequest, result.body.message)
+                    circuitBreaker!!.onError(
+                        now() - retryRequest.startTime,
+                        TimeUnit.MILLISECONDS,
+                        IllegalStateException("Non-2xx response: ${result.statusCode}")
+                    )
                     //logger.warn("[$accountName] Non-retriable HTTP error ${result.statusCode} for txId: ${paymentRequest.transactionId}")
-                    circuitBreaker!!.reportFail()
                     return
                 }
 
                 is AttemptResult.RetryableFailure -> {
+                    circuitBreaker!!.onError(now() - retryRequest.startTime, TimeUnit.MILLISECONDS, result.error!!)
                     retryRequest.onRetryableFailure()
                 }
             }
@@ -151,7 +161,7 @@ class PaymentExternalSystemAdapterImpl(
 
 
         paymentQueue.enqueue(paymentRequest)
-        circuitBreaker!!.reportFail()
+//        circuitBreaker!!.reportFail()
         //logger.error("[$accountName] Payment failed after retries for txId: ${paymentRequest.transactionId}, payment: ${paymentRequest.paymentId} — reason: $reason")
         logProcessing(false, paymentRequest, reason)
     }
@@ -160,6 +170,7 @@ class PaymentExternalSystemAdapterImpl(
         paymentRequest: PaymentRequest,
         multiplier: Long
     ): AttemptResult {
+        val requestStartTime = now()
         return try {
             val response: HttpResponse = client.post(paymentRequest, multiplier)
 
@@ -178,7 +189,11 @@ class PaymentExternalSystemAdapterImpl(
             }
 
             when {
-                body.result -> AttemptResult.Success(body, (response.responseTime.timestamp - response.requestTime.timestamp))
+                body.result -> AttemptResult.Success(
+                    body,
+                    (response.responseTime.timestamp - response.requestTime.timestamp)
+                )
+
                 response.status.value in 400..499 && response.status.value != 429 ->
                     AttemptResult.NonRetryableFailure(body, response.status.value)
 

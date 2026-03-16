@@ -4,16 +4,16 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import ru.quipy.common.utils.circuitbreaker.CircuitBreaker
 import ru.quipy.common.utils.ratelimiter.RateLimiter
 import java.util.concurrent.PriorityBlockingQueue
 import java.util.concurrent.atomic.AtomicInteger
+import io.github.resilience4j.circuitbreaker.CircuitBreaker
 import kotlin.math.ceil
 
 class PaymentDispatchBlockingQueue(
     private val rateLimiter: RateLimiter?,
     private val parallelRequests: Int,
-    private var requestAverageProcessingTime : Long,
+    private var requestAverageProcessingTime: Long,
     private val minimalLimitPerSec: Double,
     private val circuitBreaker: CircuitBreaker?,
     private val handler: suspend (PaymentRequest) -> Unit
@@ -44,7 +44,8 @@ class PaymentDispatchBlockingQueue(
     }
 
     fun canAcceptPayment(deadline: Long): Pair<Boolean, Long> {
-        val estimatedWait = queue.size / minimalLimitPerSec // TODO пересчитывать minimalLimitPerSec т.к. requestAverageProcessingTime обновляется
+        val estimatedWait =
+            queue.size / minimalLimitPerSec // TODO пересчитывать minimalLimitPerSec т.к. requestAverageProcessingTime обновляется
         val willCompleteAt = now() + estimatedWait * 1000 + requestAverageProcessingTime
 
         val canMeetDeadline = willCompleteAt < deadline
@@ -69,7 +70,7 @@ class PaymentDispatchBlockingQueue(
                 return
             }
 
-            if (!circuitBreaker!!.tryAcquire()) {
+            if (!circuitBreaker!!.tryAcquirePermission()) {
                 inFlight.decrementAndGet()
                 queue.add(paymentRequest)
                 return

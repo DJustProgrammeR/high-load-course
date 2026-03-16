@@ -6,7 +6,7 @@ import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
-import ru.quipy.common.utils.circuitbreaker.CircuitBreaker
+import io.github.resilience4j.circuitbreaker.CircuitBreaker
 import ru.quipy.common.utils.metric.MetricsCollector
 import ru.quipy.common.utils.ratelimiter.RateLimiter
 import ru.quipy.core.EventSourcingService

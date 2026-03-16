@@ -39,8 +39,8 @@ class PaymentHedgedHttpClient(
 
         install(HttpTimeout) {
             requestTimeoutMillis = 2 * averageProcessingTimeMs
-            connectTimeoutMillis = 1L // TODO count general case not local
-            socketTimeoutMillis = 50L
+            connectTimeoutMillis = 2 * averageProcessingTimeMs// 10L // TODO count general case not local
+            socketTimeoutMillis = 2 * averageProcessingTimeMs //50L
         }
 
         install(ContentNegotiation) {
@@ -104,16 +104,16 @@ class PaymentHedgedHttpClient(
 
         val start = System.nanoTime()
 
-        try{
+        try {
             return client.post(url) {
                 timeout {
                     requestTimeoutMillis = timeoutMs
-                    socketTimeoutMillis = 50L
-                    connectTimeoutMillis = 1L // TODO count general case not local
+                    socketTimeoutMillis = timeoutMs //50L
+                    connectTimeoutMillis = timeoutMs //10L // TODO count general case not local
                 }
             }
         } finally {
-            val durationMs = (System.nanoTime() - start)/1_000_000
+            val durationMs = (System.nanoTime() - start) / 1_000_000
             processingTracker.add(durationMs)
         }
     }
