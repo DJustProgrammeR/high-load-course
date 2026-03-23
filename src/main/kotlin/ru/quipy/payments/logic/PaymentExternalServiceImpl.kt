@@ -1,5 +1,6 @@
 package ru.quipy.payments.logic
 
+
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import io.ktor.client.call.*
@@ -8,17 +9,22 @@ import io.ktor.client.statement.*
 import kotlinx.coroutines.*
 import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
-import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.web.server.ResponseStatusException
-import ru.quipy.common.utils.ratelimiter.SlidingWindowRateLimiter
+import ru.quipy.common.utils.metric.MetricsCollector
+import ru.quipy.common.utils.ratelimiter.RateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
 import java.net.SocketTimeoutException
 import java.time.Duration
 import java.util.*
 import java.util.concurrent.Executors
-import kotlin.math.ceil
 import kotlin.math.min
+import io.github.resilience4j.circuitbreaker.CircuitBreaker
+import ru.quipy.common.utils.client.PaymentHedgedHttpClient
+import ru.quipy.common.utils.queue.PaymentDispatchBlockingQueue
+import ru.quipy.common.utils.retrymanager.RetryManager
+import ru.quipy.common.utils.retrymanager.RetryRequestInfo
+import java.util.concurrent.TimeUnit
 
 
 // Advice: always treat time as a Duration
@@ -26,8 +32,11 @@ import kotlin.math.min
 class PaymentExternalSystemAdapterImpl(
     private val properties: PaymentAccountProperties,
     private val paymentESService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>,
-    paymentProviderHostPort: String,
-    token: String,
+    private val paymentProviderHostPort: String,
+    private val token: String,
+    private val metrics: MetricsCollector?,
+    private val outgoingRateLimiter: RateLimiter?,
+    private val circuitBreaker: CircuitBreaker?
 ) : PaymentExternalSystemAdapter {
 
     companion object {
@@ -37,29 +46,21 @@ class PaymentExternalSystemAdapterImpl(
 
     private val accountName = properties.accountName
     private val requestAverageProcessingTime = properties.averageProcessingTime
-    private var actualAverageProcessingTimeMs = 1000L
+    private var actualAverageProcessingTimeMs = properties.averageProcessingTime.toMillis()
     private val rateLimitPerSec = properties.rateLimitPerSec.toDouble()
     private val parallelRequests = properties.parallelRequests
-    private val parallelLimitPerSec = properties.parallelRequests.toDouble()/requestAverageProcessingTime.toMillis()
     private val timeoutWhenOverflow = 3L.toString()
-    private val minimalLimitPerSec = min(rateLimitPerSec, parallelLimitPerSec)
-
-    @OptIn(DelicateCoroutinesApi::class)
-    private val executorScope = CoroutineScope(
-Dispatchers.IO
-    )
 
     @OptIn(DelicateCoroutinesApi::class)
     private val dbScope = CoroutineScope(
         Executors.newSingleThreadExecutor().asCoroutineDispatcher()
     )
 
-    private val outgoingRateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofSeconds(1L))
+    private val client =
+        PaymentHedgedHttpClient(actualAverageProcessingTimeMs, properties, paymentProviderHostPort, token, 100)
 
-    private val client = PaymentHedgedHttpClient(actualAverageProcessingTimeMs, properties, paymentProviderHostPort, token, 100)
-
-    val retryManager = RetryManager(
-        maxTries = 2,
+    private val retryManager = RetryManager(
+        maxTries = 1,
         avgProcessingTimeMs = actualAverageProcessingTimeMs,
         initialRttMs = 1.2 * actualAverageProcessingTimeMs.toDouble(),
         maxTimeoutMs = Duration.ofMillis(1500).toMillis().toDouble()
@@ -67,25 +68,35 @@ Dispatchers.IO
 
     private val paymentQueue = PaymentDispatchBlockingQueue(
         outgoingRateLimiter,
-        executorScope,
         parallelRequests,
-        requestAverageProcessingTime.toMillis() / 2,
-        minimalLimitPerSec
+        requestAverageProcessingTime.toMillis(),
+        rateLimitPerSec,
+        circuitBreaker
     ) { request ->
         performPaymentWithRetry(request)
     }
+
+    private val metricsScope = CoroutineScope(Dispatchers.Default)
 
     init {
         paymentQueue.start(
             CoroutineScope(Executors.newFixedThreadPool(5).asCoroutineDispatcher())
         )
+        metricsScope.launch {
+            while (isActive) {
+                updateMetrics()
+                delay(1000)
+            }
+        }
     }
 
-    @Scheduled(fixedDelay = 1000)
-    fun updateMetrics() {
+    private fun updateMetrics() {
         actualAverageProcessingTimeMs = client.getAverageProcessingTimeMs()
         paymentQueue.setAverageProcessingTime(actualAverageProcessingTimeMs)
         retryManager.setAverageProcessingTime(actualAverageProcessingTimeMs)
+
+        metrics!!.queueSize.set(paymentQueue.size())
+        metrics.actualAvgProcessingTime.set(actualAverageProcessingTimeMs.toInt())
     }
 
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
@@ -104,37 +115,45 @@ Dispatchers.IO
     private suspend fun performPaymentWithRetry(paymentRequest: PaymentRequest) {
         logger.info("[$accountName] Submitting payment request for payment ${paymentRequest.paymentId}, txId: ${paymentRequest.transactionId}")
 
-        dbScope.launch {
-            paymentESService.update(paymentRequest.paymentId) {
-                it.logSubmission(success = true, paymentRequest.transactionId, now(), Duration.ofMillis(now() - paymentRequest.paymentStartedAt))
-            }
-        }
+        logSubmission(paymentRequest)
 
-        val retryRequest = paymentRequest.retryRequestInfo
+        val retryRequest = RetryRequestInfo(0, now())
         while (retryManager.shouldRetry(retryRequest, paymentRequest.deadline)) {
-            val timeout = actualAverageProcessingTimeMs
-            val multiplier = retryManager.getMultiplier()
+            val multiplier = retryManager.getScalingMultiplier(retryRequest.attempt)
 
-            when (val result = executeAttempt(paymentRequest, ceil(timeout * multiplier).toLong())) {
+            when (val result = executeAttempt(paymentRequest, multiplier/*, timeout * multiplier*/)) {
                 is AttemptResult.Success -> {
                     logProcessing(true, paymentRequest, result.body.message)
+                    circuitBreaker!!.onSuccess(result.durationMs, TimeUnit.MILLISECONDS)
+
                     return
                 }
+
                 is AttemptResult.NonRetryableFailure -> {
                     logProcessing(false, paymentRequest, result.body.message)
+                    circuitBreaker!!.onError(
+                        now() - retryRequest.startTime,
+                        TimeUnit.MILLISECONDS,
+                        IllegalStateException("Non-2xx response: ${result.statusCode}")
+                    )
                     logger.warn("[$accountName] Non-retriable HTTP error ${result.statusCode} for txId: ${paymentRequest.transactionId}")
+
                     return
                 }
+
                 is AttemptResult.RetryableFailure -> {
                     retryRequest.onRetryableFailure()
                 }
             }
         }
+        circuitBreaker!!.onError(now() - retryRequest.startTime, TimeUnit.MILLISECONDS, IllegalStateException("Non-2xx response: ${429}"))
+
 
         val reason = when {
             now() >= paymentRequest.deadline -> "Deadline exceeded after ${retryRequest.attempt} retries"
             else -> "All retry attempts (${retryRequest.attempt}) exhausted"
         }
+
 
         logger.error("[$accountName] Payment failed after retries for txId: ${paymentRequest.transactionId}, payment: ${paymentRequest.paymentId} — reason: $reason")
         logProcessing(false, paymentRequest, reason)
@@ -142,10 +161,11 @@ Dispatchers.IO
 
     private suspend fun executeAttempt(
         paymentRequest: PaymentRequest,
-        timeout: Long
+        multiplier: Long
     ): AttemptResult {
+        val timeout = retryManager.computeDynamicTimeout(paymentRequest.deadline)
         return try {
-            val response: HttpResponse = client.post(paymentRequest)
+            val response: HttpResponse = client.post(paymentRequest, multiplier)
 
             val latency = response.responseTime.timestamp - response.requestTime.timestamp
             retryManager.recordLatency(latency)
@@ -162,17 +182,21 @@ Dispatchers.IO
             }
 
             when {
-                body.result -> AttemptResult.Success(body)
+                body.result -> AttemptResult.Success(
+                    body,
+                    (response.responseTime.timestamp - response.requestTime.timestamp)
+                )
+
                 response.status.value in 400..499 && response.status.value != 429 ->
                     AttemptResult.NonRetryableFailure(body, response.status.value)
                 else -> AttemptResult.RetryableFailure(body)
             }
         } catch (e: SocketTimeoutException) {
-            logger.error("Timeout", e)
+            logger.error("Timeout socket", e)
             retryManager.recordLatency(2 * timeout)
             AttemptResult.RetryableFailure(null, e)
         } catch (e: HttpRequestTimeoutException) {
-            logger.error("Timeout", e)
+            logger.error("Timeout http", e)
             retryManager.recordLatency(2 * timeout)
             AttemptResult.RetryableFailure(null, e)
         } catch (e: Exception) {
@@ -181,7 +205,20 @@ Dispatchers.IO
         }
     }
 
-    private fun logProcessing(isSuccess : Boolean, paymentRequest : PaymentRequest, reason : String?) {
+    private fun logSubmission(paymentRequest: PaymentRequest) {
+        dbScope.launch {
+            paymentESService.update(paymentRequest.paymentId) {
+                it.logSubmission(
+                    success = true,
+                    paymentRequest.transactionId,
+                    now(),
+                    Duration.ofMillis(now() - paymentRequest.paymentStartedAt)
+                )
+            }
+        }
+    }
+
+    private fun logProcessing(isSuccess: Boolean, paymentRequest: PaymentRequest, reason: String?) {
         dbScope.launch {
             paymentESService.update(paymentRequest.paymentId) {
                 it.logProcessing(isSuccess, now(), paymentRequest.transactionId, reason = reason)
@@ -190,7 +227,7 @@ Dispatchers.IO
     }
 
     sealed class AttemptResult {
-        data class Success(val body: ExternalSysResponse) : AttemptResult()
+        data class Success(val body: ExternalSysResponse, val durationMs: Long) : AttemptResult()
         data class NonRetryableFailure(val body: ExternalSysResponse, val statusCode: Int) : AttemptResult()
         data class RetryableFailure(val body: ExternalSysResponse?, val error: Throwable? = null) : AttemptResult()
     }

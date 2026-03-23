@@ -1,8 +1,10 @@
-package ru.quipy.payments.logic
+package ru.quipy.common.utils.queue
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import ru.quipy.common.utils.ratelimiter.SlidingWindowRateLimiter
+import ru.quipy.payments.logic.PaymentRequest
+import ru.quipy.payments.logic.now
 import java.time.Duration
 import java.util.concurrent.ConcurrentSkipListSet
 import java.util.concurrent.atomic.AtomicInteger
@@ -46,7 +48,7 @@ class PaymentDispatchQueue(
         val canMeetDeadline = willCompleteAt < deadline
         val queueOk = queue.size < maxQueueSize
 
-        return Pair(canMeetDeadline && queueOk, ceil( estimatedWait).toLong())
+        return Pair(canMeetDeadline && queueOk, ceil(estimatedWait).toLong())
     }
 
     private fun poll() {

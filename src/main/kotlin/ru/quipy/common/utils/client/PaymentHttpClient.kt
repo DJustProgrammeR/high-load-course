@@ -11,7 +11,7 @@ import kotlinx.coroutines.asCoroutineDispatcher
 import java.time.Duration
 import java.util.concurrent.Executors
 
-@Deprecated("Use PaymentHedgedHttpClient")
+
 @Suppress("Since15")
 class PaymentHttpClient(
     averageProcessingTime: Duration,

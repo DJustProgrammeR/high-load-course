@@ -6,6 +6,9 @@ import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import io.github.resilience4j.circuitbreaker.CircuitBreaker
+import ru.quipy.common.utils.metric.MetricsCollector
+import ru.quipy.common.utils.ratelimiter.RateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
 import ru.quipy.payments.logic.PaymentAccountProperties
@@ -61,13 +64,19 @@ class PaymentAccountsConfig {
     fun accountAdapters(
         properties: List<PaymentAccountProperties>,
         paymentService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>,
+        rateLimiters: Map<String, RateLimiter>,
+        circuitBreakers: Map<String, CircuitBreaker?>,
+        metricsCollectors: Map<String, MetricsCollector?>
     ): List<PaymentExternalSystemAdapter> {
         return properties.map {
             PaymentExternalSystemAdapterImpl(
                 it,
                 paymentService,
                 paymentProviderHostPort,
-                token
+                token,
+                metricsCollectors[it.accountName],
+                rateLimiters[it.accountName],
+                circuitBreakers[it.accountName],
             )
         }
     }

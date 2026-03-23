@@ -1,4 +1,4 @@
-package ru.quipy.payments.logic
+package ru.quipy.common.utils.client
 
 import io.ktor.client.*
 import io.ktor.client.engine.java.*
@@ -7,7 +7,6 @@ import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.serialization.jackson.*
-import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.asCoroutineDispatcher
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
@@ -17,10 +16,13 @@ import kotlin.math.min
 import kotlinx.coroutines.*
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.selects.onTimeout
+import ru.quipy.payments.logic.PaymentAccountProperties
+import ru.quipy.payments.logic.PaymentRequest
+import java.util.UUID
 
 @Suppress("Since15")
 class PaymentHedgedHttpClient(
-    averageProcessingTimeMs: Long,
+    private val averageProcessingTimeMs: Long,
     properties: PaymentAccountProperties,
     private val paymentProviderHostPort: String,
     private val token: String,
@@ -53,10 +55,11 @@ class PaymentHedgedHttpClient(
     }
 
     @OptIn(ExperimentalCoroutinesApi::class)
-    suspend fun post(paymentRequest: PaymentRequest): HttpResponse = coroutineScope {
+    suspend fun post(paymentRequest: PaymentRequest, multiplier: Long): HttpResponse = coroutineScope {
 
         val avg = getAverageProcessingTimeMs().coerceAtLeast(1)
-        val timeoutMs = 2 * avg
+        val timeoutMs = min(2 * avg, (averageProcessingTimeMs *1.2).toLong())
+//        val timeoutMs = 100L
         val hedgeDelayMs = (avg * 0.5).toLong().coerceAtLeast(1)
 
         val url = "http://$paymentProviderHostPort/external/process" +
@@ -68,11 +71,11 @@ class PaymentHedgedHttpClient(
                 "&amount=${paymentRequest.amount}"
 
         val primary = async {
-            timedRequest(url, timeoutMs)
+            timedRequest(url, timeoutMs, paymentRequest.transactionId.toString())
         }
 
         val hedged = async(start = CoroutineStart.LAZY) {
-            timedRequest(url, timeoutMs)
+            timedRequest(url, timeoutMs, paymentRequest.transactionId.toString())
         }
 
         val winner = select {
@@ -98,13 +101,17 @@ class PaymentHedgedHttpClient(
 
     private suspend fun timedRequest(
         url: String,
-        timeoutMs: Long
+        timeoutMs: Long,
+        idempotencyKey: String,
     ): HttpResponse {
 
         val start = System.nanoTime()
 
         try {
             return client.post(url) {
+                headers {
+                    append("x-idempotency-key", idempotencyKey)
+                }
                 timeout {
                     requestTimeoutMillis = timeoutMs
                     socketTimeoutMillis = timeoutMs
@@ -127,7 +134,7 @@ class ProcessingTimeTracker(
     private val sum = AtomicLong(0)
 
     init {
-        add(startAverageProcessingTime / 2)
+        add(startAverageProcessingTime)
     }
 
     fun add(durationMs: Long) {

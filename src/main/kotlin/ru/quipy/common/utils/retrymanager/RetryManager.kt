@@ -1,7 +1,7 @@
-package ru.quipy.payments.logic
+package ru.quipy.common.utils.retrymanager
 
+import ru.quipy.payments.logic.now
 import kotlin.math.abs
-
 
 class RetryManager(
     private val maxTries: Int,
