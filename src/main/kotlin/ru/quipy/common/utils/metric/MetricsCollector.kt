@@ -1,6 +1,6 @@
 package ru.quipy.common.utils.metric
 
-import io.micrometer.core.instrument.Counter
+
 import io.micrometer.core.instrument.Gauge
 import io.micrometer.core.instrument.Metrics
 import org.testcontainers.shaded.com.google.common.util.concurrent.AtomicDouble

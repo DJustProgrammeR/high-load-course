@@ -1,4 +1,4 @@
-package ru.quipy.payments.logic
+package ru.quipy.common.utils.retrymanager
 
 data class RetryRequestInfo(
     var attempt: Int,

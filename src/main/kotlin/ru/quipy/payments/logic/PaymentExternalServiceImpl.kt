@@ -20,6 +20,10 @@ import java.util.*
 import java.util.concurrent.Executors
 import kotlin.math.min
 import io.github.resilience4j.circuitbreaker.CircuitBreaker
+import ru.quipy.common.utils.client.PaymentHedgedHttpClient
+import ru.quipy.common.utils.queue.PaymentDispatchBlockingQueue
+import ru.quipy.common.utils.retrymanager.RetryManager
+import ru.quipy.common.utils.retrymanager.RetryRequestInfo
 import java.util.concurrent.TimeUnit
 
 
@@ -45,9 +49,7 @@ class PaymentExternalSystemAdapterImpl(
     private var actualAverageProcessingTimeMs = properties.averageProcessingTime.toMillis()
     private val rateLimitPerSec = properties.rateLimitPerSec.toDouble()
     private val parallelRequests = properties.parallelRequests
-    private val parallelLimitPerSec = properties.parallelRequests.toDouble() / requestAverageProcessingTime.toMillis()
     private val timeoutWhenOverflow = 3L.toString()
-    private val minimalLimitPerSec = min(rateLimitPerSec, parallelLimitPerSec)
 
     @OptIn(DelicateCoroutinesApi::class)
     private val dbScope = CoroutineScope(
@@ -68,7 +70,7 @@ class PaymentExternalSystemAdapterImpl(
         outgoingRateLimiter,
         parallelRequests,
         requestAverageProcessingTime.toMillis(),
-        minimalLimitPerSec,
+        rateLimitPerSec,
         circuitBreaker
     ) { request ->
         performPaymentWithRetry(request)
@@ -101,7 +103,7 @@ class PaymentExternalSystemAdapterImpl(
         val paymentRequest = PaymentRequest(deadline, paymentId, amount, paymentStartedAt)
 
         if (!paymentQueue.enqueue(paymentRequest)) {
-            //logger.error("[$accountName] Queue overflow! Can't equeue $paymentId")
+            logger.error("[$accountName] Queue overflow! Can't equeue $paymentId")
             logProcessing(false, paymentRequest, "Queue overflow (back pressure).")
             throw ResponseStatusException(
                 HttpStatus.TOO_MANY_REQUESTS,
@@ -111,7 +113,7 @@ class PaymentExternalSystemAdapterImpl(
     }
 
     private suspend fun performPaymentWithRetry(paymentRequest: PaymentRequest) {
-        //logger.info("[$accountName] Submitting payment request for payment ${paymentRequest.paymentId}, txId: ${paymentRequest.transactionId}")
+        logger.info("[$accountName] Submitting payment request for payment ${paymentRequest.paymentId}, txId: ${paymentRequest.transactionId}")
 
         logSubmission(paymentRequest)
 
@@ -123,10 +125,7 @@ class PaymentExternalSystemAdapterImpl(
                 is AttemptResult.Success -> {
                     logProcessing(true, paymentRequest, result.body.message)
                     circuitBreaker!!.onSuccess(result.durationMs, TimeUnit.MILLISECONDS)
-//                    when {
-//                        result.durationMs >= client.getAverageProcessingTimeMs()*1.3 -> circuitBreaker!!.reportSlow()
-//                        else -> circuitBreaker!!.reportSuccess()
-//                    }
+
                     return
                 }
 
@@ -137,16 +136,18 @@ class PaymentExternalSystemAdapterImpl(
                         TimeUnit.MILLISECONDS,
                         IllegalStateException("Non-2xx response: ${result.statusCode}")
                     )
-                    //logger.warn("[$accountName] Non-retriable HTTP error ${result.statusCode} for txId: ${paymentRequest.transactionId}")
+                    logger.warn("[$accountName] Non-retriable HTTP error ${result.statusCode} for txId: ${paymentRequest.transactionId}")
+
                     return
                 }
 
                 is AttemptResult.RetryableFailure -> {
-                    circuitBreaker!!.onError(now() - retryRequest.startTime, TimeUnit.MILLISECONDS, result.error?:IllegalStateException("Non-2xx response: ${429}"))
                     retryRequest.onRetryableFailure()
                 }
             }
         }
+        circuitBreaker!!.onError(now() - retryRequest.startTime, TimeUnit.MILLISECONDS, IllegalStateException("Non-2xx response: ${429}"))
+
 
         val reason = when {
             now() >= paymentRequest.deadline -> "Deadline exceeded after ${retryRequest.attempt} retries"
@@ -154,8 +155,6 @@ class PaymentExternalSystemAdapterImpl(
         }
 
 
-        //paymentQueue.enqueue(paymentRequest)
-//        circuitBreaker!!.reportFail()
         logger.error("[$accountName] Payment failed after retries for txId: ${paymentRequest.transactionId}, payment: ${paymentRequest.paymentId} — reason: $reason")
         logProcessing(false, paymentRequest, reason)
     }
@@ -164,11 +163,12 @@ class PaymentExternalSystemAdapterImpl(
         paymentRequest: PaymentRequest,
         multiplier: Long
     ): AttemptResult {
+        val timeout = retryManager.computeDynamicTimeout(paymentRequest.deadline)
         return try {
             val response: HttpResponse = client.post(paymentRequest, multiplier)
 
-            //val latency = response.responseTime.timestamp - response.requestTime.timestamp
-            //retryManager.recordLatency(latency)
+            val latency = response.responseTime.timestamp - response.requestTime.timestamp
+            retryManager.recordLatency(latency)
 
             val body = runCatching {
                 response.body<ExternalSysResponse>()
@@ -192,12 +192,12 @@ class PaymentExternalSystemAdapterImpl(
                 else -> AttemptResult.RetryableFailure(body)
             }
         } catch (e: SocketTimeoutException) {
-            //logger.error("Timeout socket", e)
-            //retryManager.recordLatency(2 * timeout)
+            logger.error("Timeout socket", e)
+            retryManager.recordLatency(2 * timeout)
             AttemptResult.RetryableFailure(null, e)
         } catch (e: HttpRequestTimeoutException) {
-            //logger.error("Timeout http", e)
-            //retryManager.recordLatency(2 * timeout)
+            logger.error("Timeout http", e)
+            retryManager.recordLatency(2 * timeout)
             AttemptResult.RetryableFailure(null, e)
         } catch (e: Exception) {
             logger.error("Payment failed", e)

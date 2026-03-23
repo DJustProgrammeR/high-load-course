@@ -1,20 +1,23 @@
-package ru.quipy.payments.logic
+package ru.quipy.common.utils.queue
 
+import io.github.resilience4j.circuitbreaker.CircuitBreaker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import ru.quipy.common.utils.ratelimiter.RateLimiter
+import ru.quipy.payments.logic.PaymentRequest
+import ru.quipy.payments.logic.now
 import java.util.concurrent.PriorityBlockingQueue
 import java.util.concurrent.atomic.AtomicInteger
-import io.github.resilience4j.circuitbreaker.CircuitBreaker
 import kotlin.math.ceil
+import kotlin.math.min
 
 class PaymentDispatchBlockingQueue(
     private val rateLimiter: RateLimiter?,
     private val parallelRequests: Int,
     private var requestAverageProcessingTime: Long,
-    private val minimalLimitPerSec: Double,
+    private val rateLimitPerSec: Double,
     private val circuitBreaker: CircuitBreaker?,
     private val handler: suspend (PaymentRequest) -> Unit
 ) {
@@ -23,6 +26,8 @@ class PaymentDispatchBlockingQueue(
         Dispatchers.IO
     )
     private val maxQueueSize = 1000
+    private var parallelLimitPerSec = parallelRequests.toDouble() / requestAverageProcessingTime
+    private var minimalLimitPerSec = min(parallelLimitPerSec, rateLimitPerSec)
     private val queue = PriorityBlockingQueue<PaymentRequest>(maxQueueSize, compareBy { it.deadline })
     private val inFlight = AtomicInteger(0)
 
@@ -41,11 +46,13 @@ class PaymentDispatchBlockingQueue(
 
     fun setAverageProcessingTime(time: Long) {
         requestAverageProcessingTime = time
+        parallelLimitPerSec = parallelRequests.toDouble() / requestAverageProcessingTime
+        minimalLimitPerSec = min(parallelLimitPerSec, rateLimitPerSec)
     }
 
     fun canAcceptPayment(deadline: Long): Pair<Boolean, Long> {
         val estimatedWait =
-            queue.size / minimalLimitPerSec // TODO пересчитывать minimalLimitPerSec т.к. requestAverageProcessingTime обновляется
+            queue.size / minimalLimitPerSec
         val willCompleteAt = now() + estimatedWait * 1000 + requestAverageProcessingTime
 
         val canMeetDeadline = willCompleteAt < deadline

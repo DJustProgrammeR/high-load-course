@@ -2,7 +2,6 @@ package ru.quipy.common.utils.metric
 
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
-import ru.quipy.common.utils.circuitbreaker.CircuitBreaker
 import ru.quipy.payments.logic.PaymentAccountProperties
 import java.time.Duration
 
